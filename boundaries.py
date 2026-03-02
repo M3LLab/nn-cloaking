@@ -307,22 +307,15 @@ def _xi_profile(x):
 # Effective material tensors
 # ═══════════════════════════════════════════════════════════════════════
 
-def C_iso():
-    """4th-order isotropic stiffness tensor  C₀[i,j,k,l]."""
-    C = jnp.zeros((2, 2, 2, 2))
-    delta = jnp.eye(2)
-    for i in range(2):
-        for j in range(2):
-            for k in range(2):
-                for l in range(2):
-                    C = C.at[i, j, k, l].set(
-                        lam * delta[i, j] * delta[k, l]
-                        + mu * (delta[i, k] * delta[j, l]
-                                + delta[i, l] * delta[j, k])
-                    )
-    return C
+def C_iso(lam, mu):
+    I = jnp.eye(2)
+    # δij δkl
+    term_lam = lam * jnp.einsum("ij,kl->ijkl", I, I)
+    # δik δjl + δil δjk
+    term_mu  = mu * (jnp.einsum("ik,jl->ijkl", I, I) + jnp.einsum("il,jk->ijkl", I, I))
+    return term_lam + term_mu
 
-C0 = C_iso()
+C0 = C_iso(lam, mu)
 
 # paper-based symmetrization:
 # augmented Voigt index map: 0->11, 1->22, 2->12, 3->21
@@ -363,13 +356,14 @@ def symmetrize_stiffness(Ceff):
     return voigt4_to_C(Msym)
 
 
-def C_eff(x):
+def C_eff(x, symmetrize=False):
     """Position-dependent effective stiffness tensor."""
     F   = F_tensor(x)
     J   = jnp.linalg.det(F)
     # Cosserat transformed tensor
     Cnew = jnp.einsum('iI,kK,IjKl->ijkl', F, F, C0) / J
-    # Cnew = symmetrize_stiffness(Cnew)    # symmetrisation (uncomment if necessary)
+    if symmetrize:
+        Cnew = symmetrize_stiffness(Cnew)
     return jnp.where(_in_cloak(x), Cnew, C0)
 
 def rho_eff(x):
@@ -517,7 +511,7 @@ problem = RayleighCloakProblem(
 )
 
 print("Solving frequency-domain system with absorbing layers …")
-sol_list = solver(problem, solver_options={'umfpack_solver': {}})
+sol_list = solver(problem, solver_options={'petsc_solver': {'ksp_type': 'preonly', 'pc_type': 'lu'}})
 u = sol_list[0]            # shape (num_nodes, 4)
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -593,28 +587,6 @@ writer.Write()
 print(f"VTK saved → {vtk_path}")
 
 plot_vtk_results(vtk_path)
-
-# ═══════════════════════════════════════════════════════════════════════
-# Autograd-compatible loss function  (example)
-# ═══════════════════════════════════════════════════════════════════════
-
-def cloaking_loss(problem_instance, u_sol):
-    """Example loss: mean |u|² on the surface downstream of the cloak.
-
-    This function is differentiable w.r.t. any JAX parameter that
-    flows into the Problem (e.g. cloak geometry a, b, c, or material
-    properties) because the entire forward solve is built on JAX ops.
-    """
-    # Surface nodes downstream of cloak  (right half of physical domain)
-    surface_mask = (
-        jnp.isclose(mesh.points[:, 1], y_top) &
-        (mesh.points[:, 0] > x_c + c)
-    )
-    # Sum of squared displacement magnitudes on those nodes
-    u_R_sq = u_sol[:, 0]**2 + u_sol[:, 1]**2
-    u_I_sq = u_sol[:, 2]**2 + u_sol[:, 3]**2
-    energy  = jnp.where(surface_mask, u_R_sq + u_I_sq, 0.0)
-    return jnp.sum(energy) / jnp.maximum(jnp.sum(surface_mask.astype(float)), 1.0)
 
 print("\n✓  Script finished.  Absorbing layers active on left / right / bottom.")
 print(f"   Domain:  {W_total:.2f} × {H_total:.2f}   (physical {W:.2f} × {H:.2f})")
