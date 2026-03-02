@@ -193,7 +193,125 @@ def plot_results(data_path):
     print(f"Physical-domain plot saved → {fname_crop}")
 
 
+def plot_vtk_results(vtk_path):
+    """Plot displacement field from a VTK file using actual mesh connectivity."""
+    import vtk as _vtk
+    from vtk.util.numpy_support import vtk_to_numpy
+    from matplotlib.collections import PolyCollection
+
+    reader = _vtk.vtkUnstructuredGridReader()
+    reader.SetFileName(vtk_path)
+    reader.ReadAllScalarsOn()
+    reader.ReadAllFieldsOn()
+    reader.Update()
+    grid = reader.GetOutput()
+
+    # Extract points (2D)
+    pts = vtk_to_numpy(grid.GetPoints().GetData())[:, :2]
+
+    # Extract quad cells → list of (4, 2) vertex arrays
+    cells = grid.GetCells()
+    cell_array = vtk_to_numpy(cells.GetConnectivityArray())
+    offsets = vtk_to_numpy(cells.GetOffsetsArray())
+    quads = []
+    for i in range(len(offsets) - 1):
+        ids = cell_array[offsets[i]:offsets[i + 1]]
+        quads.append(pts[ids])
+
+    # Point data
+    mag = vtk_to_numpy(grid.GetPointData().GetArray("mag_u"))
+
+    # Per-cell colour = mean of vertex values
+    cell_vals = np.array([mag[cell_array[offsets[i]:offsets[i+1]]].mean()
+                          for i in range(len(offsets) - 1)])
+
+    # Read metadata from field data
+    fd = grid.GetFieldData()
+    def _fval(name):
+        return vtk_to_numpy(fd.GetArray(name))[0]
+    x_src, y_top = _fval("x_src"), _fval("y_top")
+    x_off, y_off = _fval("x_off"), _fval("y_off")
+    W, H = _fval("W"), _fval("H")
+    x_src_phys = _fval("x_src_phys")
+    f_star = _fval("f_star")
+
+    a_cloak = 0.0774 * H
+    b_cloak = 3 * a_cloak
+    c_cloak = 0.309 * H / 2.0
+    x_c = x_off + W / 2.0
+
+    os.makedirs("output", exist_ok=True)
+    stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    # ── Full-domain plot ─────────────────────────────────────────────────
+    norm = AsymSigmoidNorm(mid=0.25 * mag.max(), steepness_left=2,
+                           steepness_right=30, vmin=mag.min(), vmax=mag.max())
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+    pc = PolyCollection(quads, array=cell_vals, cmap='RdBu_r', norm=norm,
+                        edgecolors='face', linewidths=0.1, rasterized=True)
+    ax.add_collection(pc)
+    ax.autoscale_view()
+
+    ax.plot(x_src, y_top, 'r*', markersize=16, label='source')
+    ax.axvline(x_off, color='cyan', ls='--', lw=0.7, label='PML interface')
+    ax.axvline(x_off + W, color='cyan', ls='--', lw=0.7)
+    ax.axhline(y_off, color='cyan', ls='--', lw=0.7)
+    ax.plot([x_c - c_cloak, x_c, x_c + c_cloak],
+            [y_top, y_top - b_cloak, y_top], ls='--', color='yellow', lw=1.2)
+    ax.plot([x_c - c_cloak, x_c, x_c + c_cloak],
+            [y_top, y_top - a_cloak, y_top], ls='--', color='yellow', lw=1.2)
+
+    fig.colorbar(pc, ax=ax, shrink=0.8, label='|u|')
+    ax.set_title(f"Triangular Cloak – VTK mesh  (f*={f_star})")
+    ax.set_xlabel("x"); ax.set_ylabel("y")
+    ax.set_aspect('equal')
+
+    fname_full = f"output/cloak_vtk_full_{stamp}.png"
+    fig.savefig(fname_full, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+    print(f"VTK full-domain plot saved → {fname_full}")
+
+    # ── Physical-domain-only plot ────────────────────────────────────────
+    # Keep cells whose centroid is inside physical domain
+    centroids = np.array([q.mean(axis=0) for q in quads])
+    phys_mask = ((centroids[:, 0] >= x_off - 1e-8) &
+                 (centroids[:, 0] <= x_off + W + 1e-8) &
+                 (centroids[:, 1] >= y_off - 1e-8))
+
+    phys_quads = [quads[i] - np.array([x_off, y_off]) for i in range(len(quads)) if phys_mask[i]]
+    phys_vals = cell_vals[phys_mask]
+
+    norm2 = AsymSigmoidNorm(mid=0.25 * phys_vals.max(), steepness_left=2,
+                            steepness_right=30, vmin=phys_vals.min(), vmax=phys_vals.max())
+
+    fig2, ax2 = plt.subplots(figsize=(13, 4))
+    pc2 = PolyCollection(phys_quads, array=phys_vals, cmap='RdBu_r', norm=norm2,
+                         edgecolors='face', linewidths=0.1, rasterized=True)
+    ax2.add_collection(pc2)
+    ax2.autoscale_view()
+
+    ax2.plot(x_src_phys, H, 'r*', markersize=16)
+    x_c_phys = W / 2.0
+    ax2.plot([x_c_phys - c_cloak, x_c_phys, x_c_phys + c_cloak],
+             [H, H - b_cloak, H], ls='--', color='yellow', lw=1.2)
+    ax2.plot([x_c_phys - c_cloak, x_c_phys, x_c_phys + c_cloak],
+             [H, H - a_cloak, H], ls='--', color='yellow', lw=1.2)
+
+    fig2.colorbar(pc2, ax=ax2, shrink=0.8, label='|u|')
+    ax2.set_title(f"Physical domain only – VTK mesh  (f*={f_star})")
+    ax2.set_xlabel("x"); ax2.set_ylabel("y")
+    ax2.set_aspect('equal')
+
+    fname_crop = f"output/cloak_vtk_phys_{stamp}.png"
+    fig2.savefig(fname_crop, dpi=200, bbox_inches='tight')
+    plt.close(fig2)
+    print(f"VTK physical-domain plot saved → {fname_crop}")
+
+
 if __name__ == "__main__":
-    # ── Load data ────────────────────────────────────────────────────────
     data_path = sys.argv[1] if len(sys.argv) > 1 else "output/results.npz"
-    plot_results(data_path)
+    if data_path.endswith('.vtk'):
+        plot_vtk_results(data_path)
+    else:
+        plot_results(data_path)

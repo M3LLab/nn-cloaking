@@ -35,15 +35,19 @@ JAX-FEM hooks used
 """
 
 import jax
-import jax.numpy as jnp
+import jax.numpy as jnp 
 import numpy as np
 from jax_fem.problem import Problem
 from jax_fem.solver import solver
-from jax_fem.generate_mesh import Mesh, rectangle_mesh
+from jax_fem.generate_mesh import Mesh
+import gmsh
+import meshio
 
 # ═══════════════════════════════════════════════════════════════════════
-# 1.  Physical parameters  (identical to the original triangle.py)
+# Physical parameters  (identical to the original triangle.py)
 # ═══════════════════════════════════════════════════════════════════════
+
+IS_REFERENCE = False   # set True to disable cloak region (for reference field)
 
 rho0 = 1600.0                          # mass density  [kg/m³]
 cs   = 300.0                           # shear wave speed  [m/s]
@@ -70,7 +74,7 @@ b   = 3 * a                            # outer triangle depth
 c   = 0.309 * H / 2.0                  # half-width at surface
 
 # ═══════════════════════════════════════════════════════════════════════
-# 2.  Absorbing-layer (PML-region) parameters
+# Absorbing-layer (PML-region) parameters
 # ═══════════════════════════════════════════════════════════════════════
 
 L_pml    = 1.0 * lambda_star           # thickness of each absorbing layer
@@ -96,23 +100,187 @@ y_top      = H_total                   # free-surface y-coordinate
 x_c = x_off + W / 2.0
 
 # ═══════════════════════════════════════════════════════════════════════
-# 3.  Mesh
+#  Mesh
 # ═══════════════════════════════════════════════════════════════════════
 
 n_pml_x = 32                           # elements across each lateral PML
 n_pml_y = 32                           # elements across the bottom PML
-nx_phys = 400                          # elements across physical width
-ny_phys = 131                          # elements across physical depth
+nx_phys = 200
+ny_phys = 60
 
 nx_total = n_pml_x + nx_phys + n_pml_x
 ny_total = n_pml_y + ny_phys
 
-meshio_mesh = rectangle_mesh(nx_total, ny_total, W_total, H_total)
-mesh = Mesh(meshio_mesh.points, meshio_mesh.cells_dict['quad'],
-            ele_type='QUAD4')
+# ═══════════════════════════════════════════════════════════════════════
+# Triangular-cloak coordinate transformation
+# ═══════════════════════════════════════════════════════════════════════
+
+def _in_cloak(x, is_reference=IS_REFERENCE):
+    """True inside the cloak annulus (uses EXTENDED mesh coords)."""
+    depth = y_top - x[1]                # depth from free surface
+    r     = jnp.abs(x[0] - x_c) / c
+    d2    = b * (1.0 - r)
+    d1    = a * (1.0 - r)
+    if is_reference:
+        return False
+    else:
+        return (r <= 1.0) & (depth >= d1) & (depth <= d2)
+
+def _in_defect(x):
+    """True inside the hidden void (uses EXTENDED mesh coords)."""
+    depth = y_top - x[1]
+    r     = jnp.abs(x[0] - x_c) / c
+    d1    = a * (1.0 - r)
+    return (r <= 1.0) & (depth >= 0.0) & (depth <= d1)
+
+def F_tensor(x):
+    """Deformation gradient of the triangular transformation."""
+    sign = jnp.sign(x[0] - x_c)
+    F21  = sign * a / c
+    F22  = (b - a) / b
+    F_cloak = jnp.array([[1.0, 0.0],
+                          [F21, F22]])
+    return jnp.where(_in_cloak(x), F_cloak, jnp.eye(2))
+
+
+def generate_gmsh_mesh():
+    """Generate a TRI3 mesh of the domain.
+
+    When IS_REFERENCE is False (cloak simulation):
+      The triangular defect is cut out as a true hole.
+    When IS_REFERENCE is True (reference simulation):
+      Plain rectangular domain — no defect, no cloak, homogeneous space.
+
+    The triangle vertices (in extended-mesh coords):
+      - left  surface corner: (x_c - c, y_top)
+      - right surface corner: (x_c + c, y_top)
+      - apex (deepest point): (x_c,     y_top - a)
+    """
+    h_elem = min(W_total / nx_total, H_total / ny_total)
+    h_fine = h_elem / 4.0       # refined size near the cloak
+    h_surf = h_elem / 4.0       # refined size near the free surface
+
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Verbosity", 1)
+    gmsh.model.add("cloak_domain")
+
+    # Corner points of the rectangle
+    p1 = gmsh.model.geo.addPoint(0.0,     0.0,     0.0, h_elem)  # bottom-left
+    p2 = gmsh.model.geo.addPoint(W_total, 0.0,     0.0, h_elem)  # bottom-right
+    p3 = gmsh.model.geo.addPoint(W_total, H_total, 0.0, h_elem)  # top-right
+    p4 = gmsh.model.geo.addPoint(0.0,     H_total, 0.0, h_elem)  # top-left
+
+    if IS_REFERENCE:
+        # ── Reference: simple rectangle, no defect ──
+        l_bot   = gmsh.model.geo.addLine(p1, p2)
+        l_right = gmsh.model.geo.addLine(p2, p3)
+        l_top   = gmsh.model.geo.addLine(p3, p4)
+        l_left  = gmsh.model.geo.addLine(p4, p1)
+
+        outer_loop = gmsh.model.geo.addCurveLoop([l_bot, l_right, l_top, l_left])
+        surf = gmsh.model.geo.addPlaneSurface([outer_loop])
+        gmsh.model.geo.synchronize()
+
+        top_lines = [l_top]
+
+    else:
+        # ── Cloak: triangle cut out as a hole ──
+        pt_left  = gmsh.model.geo.addPoint(x_c - c, y_top, 0.0, h_fine)
+        pt_right = gmsh.model.geo.addPoint(x_c + c, y_top, 0.0, h_fine)
+        pt_apex  = gmsh.model.geo.addPoint(x_c, y_top - a,  0.0, h_fine)
+
+        # Outer cloak apex (for refinement)
+        oc_apex  = gmsh.model.geo.addPoint(x_c,     y_top - b, 0.0, h_fine)
+
+        # Rectangle edges (top edge split into 3 segments around the triangle opening)
+        l_bot   = gmsh.model.geo.addLine(p1, p2)          # bottom
+        l_right = gmsh.model.geo.addLine(p2, p3)          # right
+        l_top1  = gmsh.model.geo.addLine(p3, pt_right)    # top: right corner → tri right
+        l_top2  = gmsh.model.geo.addLine(pt_left, p4)     # top: tri left → left corner
+        l_left  = gmsh.model.geo.addLine(p4, p1)          # left
+
+        # Triangle slopes (the opening between pt_left and pt_right is the free surface)
+        tl_right = gmsh.model.geo.addLine(pt_right, pt_apex)  # right slope
+        tl_left  = gmsh.model.geo.addLine(pt_apex, pt_left)   # left slope
+
+        # Single boundary loop: rectangle outer edges + triangle slopes
+        outer_loop = gmsh.model.geo.addCurveLoop([
+            l_bot, l_right, l_top1, tl_right, tl_left, l_top2, l_left
+        ])
+
+        surf = gmsh.model.geo.addPlaneSurface([outer_loop])
+
+        # Embed oc_apex inside the surface so it becomes a connected mesh node
+        gmsh.model.geo.synchronize()
+        gmsh.model.mesh.embed(0, [oc_apex], 2, surf)
+
+        top_lines = [l_top1, l_top2]
+
+        # ── Mesh refinement near the cloak/defect region ──
+        f_dist_inner = gmsh.model.mesh.field.add("Distance")
+        gmsh.model.mesh.field.setNumbers(f_dist_inner, "CurvesList",
+                                         [tl_right, tl_left])
+        gmsh.model.mesh.field.setNumber(f_dist_inner, "Sampling", 100)
+
+        f_dist_outer = gmsh.model.mesh.field.add("Distance")
+        gmsh.model.mesh.field.setNumbers(f_dist_outer, "PointsList",
+                                         [pt_left, pt_right, oc_apex])
+
+        f_dist_cloak = gmsh.model.mesh.field.add("Min")
+        gmsh.model.mesh.field.setNumbers(f_dist_cloak, "FieldsList",
+                                         [f_dist_inner, f_dist_outer])
+
+        f_thresh_cloak = gmsh.model.mesh.field.add("Threshold")
+        gmsh.model.mesh.field.setNumber(f_thresh_cloak, "InField", f_dist_cloak)
+        gmsh.model.mesh.field.setNumber(f_thresh_cloak, "SizeMin", h_fine)
+        gmsh.model.mesh.field.setNumber(f_thresh_cloak, "SizeMax", h_elem)
+        gmsh.model.mesh.field.setNumber(f_thresh_cloak, "DistMin", 0.0)
+        gmsh.model.mesh.field.setNumber(f_thresh_cloak, "DistMax", b * 2.0)
+
+    # ── Mesh refinement near the free surface (x4) ──
+    f_dist_surf = gmsh.model.mesh.field.add("Distance")
+    gmsh.model.mesh.field.setNumbers(f_dist_surf, "CurvesList", top_lines)
+    gmsh.model.mesh.field.setNumber(f_dist_surf, "Sampling", 200)
+
+    f_thresh_surf = gmsh.model.mesh.field.add("Threshold")
+    gmsh.model.mesh.field.setNumber(f_thresh_surf, "InField", f_dist_surf)
+    gmsh.model.mesh.field.setNumber(f_thresh_surf, "SizeMin", h_surf)
+    gmsh.model.mesh.field.setNumber(f_thresh_surf, "SizeMax", h_elem)
+    gmsh.model.mesh.field.setNumber(f_thresh_surf, "DistMin", 0.0)
+    gmsh.model.mesh.field.setNumber(f_thresh_surf, "DistMax", lambda_star)
+
+    # ── Final background mesh field ──
+    if IS_REFERENCE:
+        gmsh.model.mesh.field.setAsBackgroundMesh(f_thresh_surf)
+    else:
+        f_final = gmsh.model.mesh.field.add("Min")
+        gmsh.model.mesh.field.setNumbers(f_final, "FieldsList",
+                                         [f_thresh_cloak, f_thresh_surf])
+        gmsh.model.mesh.field.setAsBackgroundMesh(f_final)
+
+    # Disable default size computation so the background field controls everything
+    gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+    gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+    gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+
+    gmsh.model.mesh.generate(2)
+
+    # Export and read via meshio
+    msh_path = "output/_cloak_mesh.msh"
+    gmsh.write(msh_path)
+    gmsh.finalize()
+
+    msh = meshio.read(msh_path)
+    points = msh.points[:, :2]
+    cells = msh.cells_dict['triangle']
+    return points, cells
+
+
+points, cells = generate_gmsh_mesh()
+mesh = Mesh(points, cells, ele_type='TRI3')
 
 # ═══════════════════════════════════════════════════════════════════════
-# 4.  Damping profile  ξ(x)
+# Damping profile  ξ(x)
 # ═══════════════════════════════════════════════════════════════════════
 
 def _xi_profile(x):
@@ -134,36 +302,9 @@ def _xi_profile(x):
     # additive combination (works well for corner regions)
     return xi_x + xi_y
 
-# ═══════════════════════════════════════════════════════════════════════
-# 5.  Triangular-cloak coordinate transformation
-# ═══════════════════════════════════════════════════════════════════════
-
-def _in_cloak(x):
-    """True inside the cloak annulus (uses EXTENDED mesh coords)."""
-    depth = y_top - x[1]                # depth from free surface
-    r     = jnp.abs(x[0] - x_c) / c
-    d2    = b * (1.0 - r)
-    d1    = a * (1.0 - r)
-    return (r <= 1.0) & (depth >= d1) & (depth <= d2)
-
-def _in_defect(x):
-    """True inside the hidden void (uses EXTENDED mesh coords)."""
-    depth = y_top - x[1]
-    r     = jnp.abs(x[0] - x_c) / c
-    d1    = a * (1.0 - r)
-    return (r <= 1.0) & (depth >= 0.0) & (depth <= d1)
-
-def F_tensor(x):
-    """Deformation gradient of the triangular transformation."""
-    sign = jnp.sign(x[0] - x_c)
-    F21  = sign * a / c
-    F22  = (b - a) / b
-    F_cloak = jnp.array([[1.0, 0.0],
-                          [F21, F22]])
-    return jnp.where(_in_cloak(x), F_cloak, jnp.eye(2))
 
 # ═══════════════════════════════════════════════════════════════════════
-# 6.  Effective material tensors
+# Effective material tensors
 # ═══════════════════════════════════════════════════════════════════════
 
 def C_iso():
@@ -183,7 +324,44 @@ def C_iso():
 
 C0 = C_iso()
 
-_eps_void = 1e-4          # near-zero stiffness / density for the defect
+# paper-based symmetrization:
+# augmented Voigt index map: 0->11, 1->22, 2->12, 3->21
+pairs = [(0,0), (1,1), (0,1), (1,0)]
+
+def C_to_voigt4(C):
+    M = jnp.zeros((4,4))
+    for I,(i,j) in enumerate(pairs):
+        for J,(k,l) in enumerate(pairs):
+            M = M.at[I,J].set(C[i,j,k,l])
+    return M
+
+def voigt4_to_C(M):
+    C = jnp.zeros((2,2,2,2))
+    for I,(i,j) in enumerate(pairs):
+        for J,(k,l) in enumerate(pairs):
+            C = C.at[i,j,k,l].set(M[I,J])
+    return C
+
+def symmetrize_stiffness(Ceff):
+    # paper arithmetic mean in augmented Voigt:
+    # Csym_IJ = (Ceff_IJ + Ceff_IJbar + Ceff_IbarJ + Ceff_IbarJbar)/4
+    # where bar swaps 12 <-> 21  (indices 2 <-> 3)
+    M = C_to_voigt4(Ceff)
+    P = jnp.array([[1,0,0,0],
+                   [0,1,0,0],
+                   [0,0,0,1],
+                   [0,0,1,0]])   # swaps 2 and 3
+
+    MbarI  = P @ M
+    MbarJ  = M @ P
+    MbarIJ = P @ M @ P
+
+    Msym = (M + MbarI + MbarJ + MbarIJ) / 4.0
+
+    # enforce symmetric matrix (Cauchy): Msym = (Msym + Msym.T)/2
+    Msym = 0.5*(Msym + Msym.T)
+    return voigt4_to_C(Msym)
+
 
 def C_eff(x):
     """Position-dependent effective stiffness tensor."""
@@ -191,29 +369,22 @@ def C_eff(x):
     J   = jnp.linalg.det(F)
     # Cosserat transformed tensor
     Cnew = jnp.einsum('iI,kK,IjKl->ijkl', F, F, C0) / J
-    # Full Cauchy symmetrisation (arithmetic-mean of 4 minor-index permutations)
-    Csym = (Cnew
-            + jnp.transpose(Cnew, (1, 0, 2, 3))
-            + jnp.transpose(Cnew, (0, 1, 3, 2))
-            + jnp.transpose(Cnew, (1, 0, 3, 2))) / 4.0
-    C_void = _eps_void * C0
-    return jnp.where(_in_defect(x), C_void,
-                     jnp.where(_in_cloak(x), Csym, C0))
+    # Cnew = symmetrize_stiffness(Cnew)    # symmetrisation (uncomment if necessary)
+    return jnp.where(_in_cloak(x), Cnew, C0)
 
 def rho_eff(x):
     """Position-dependent effective density."""
     F   = F_tensor(x)
     J   = jnp.linalg.det(F)
     rho_cloak = rho0 / J
-    rho_void  = _eps_void * rho0
-    return jnp.where(_in_defect(x), rho_void,
-                     jnp.where(_in_cloak(x), rho_cloak, rho0))
+    return jnp.where(_in_cloak(x), rho_cloak, rho0)
 
 # ═══════════════════════════════════════════════════════════════════════
-# 7.  Source
+# Source
 # ═══════════════════════════════════════════════════════════════════════
 
-sigma_src = 3.0 * (W / nx_phys)        # Gaussian half-width  (~3 elements)
+sigma_src = 0.01 * lambda_star
+# sigma_src = 3.0 * (W / nx_phys)        # Gaussian half-width  (~3 elements)
 F0        = 1.0                         # force amplitude (Pa)
 
 def top_surface(point):
@@ -221,7 +392,7 @@ def top_surface(point):
     return jnp.isclose(point[1], H_total)
 
 # ═══════════════════════════════════════════════════════════════════════
-# 8.  FEM Problem  (vec = 4 :  Re(uₓ), Re(u_y), Im(uₓ), Im(u_y))
+# FEM Problem  (vec = 4 :  Re(uₓ), Re(u_y), Im(uₓ), Im(u_y))
 # ═══════════════════════════════════════════════════════════════════════
 
 class RayleighCloakProblem(Problem):
@@ -294,7 +465,7 @@ class RayleighCloakProblem(Problem):
         return [traction]
 
 # ═══════════════════════════════════════════════════════════════════════
-# 9.  Boundary conditions
+# Boundary conditions
 # ═══════════════════════════════════════════════════════════════════════
 #
 # Zero displacement (real & imaginary) on the OUTER edges of the PML:
@@ -333,14 +504,14 @@ dirichlet_bc_info = [
 ]
 
 # ═══════════════════════════════════════════════════════════════════════
-# 10.  Assemble and solve
+# Assemble and solve
 # ═══════════════════════════════════════════════════════════════════════
 
 problem = RayleighCloakProblem(
     mesh          = mesh,
     vec           = 4,
     dim           = 2,
-    ele_type      = 'QUAD4',
+    ele_type      = 'TRI3',
     dirichlet_bc_info = dirichlet_bc_info,
     location_fns  = [top_surface],
 )
@@ -350,13 +521,16 @@ sol_list = solver(problem, solver_options={'umfpack_solver': {}})
 u = sol_list[0]            # shape (num_nodes, 4)
 
 # ═══════════════════════════════════════════════════════════════════════
-# 11.  Save results for plotting
+# Save results for plotting
 # ═══════════════════════════════════════════════════════════════════════
 
 import os
 os.makedirs("output", exist_ok=True)
+from datetime import datetime
 
-np.savez("output/results.npz",
+# stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+stamp = ''
+np.savez(f"output/results_{f_star:.2f}_{stamp}.npz",
          u=np.asarray(u),
          pts_x=np.asarray(mesh.points[:, 0]),
          pts_y=np.asarray(mesh.points[:, 1]),
@@ -365,11 +539,63 @@ np.savez("output/results.npz",
          W=W, H=H,
          x_src_phys=x_src_phys,
          f_star=f_star)
-print("Results saved → output/results.npz")
-print("Run `python plot_results.py` to generate plots.")
+print("Results saved → output/results_{f_star:.2f}_{stamp}.npz")
+# print("Run `python plot_results.py` to generate plots.")
+
+from plot_results import plot_results, plot_vtk_results
+plot_results(f"output/results_{f_star:.2f}_{stamp}.npz")
+
+# ── Save VTK with mesh connectivity (void is naturally visible) ──
+import vtk
+from vtk.util.numpy_support import numpy_to_vtk
+
+pts_np = np.asarray(mesh.points)   # (num_nodes, 2 or 3)
+cells_np = np.asarray(mesh.cells)  # (num_cells, 3)
+u_np = np.asarray(u)               # (num_nodes, 4)
+
+vtk_pts = vtk.vtkPoints()
+pts3d = np.zeros((pts_np.shape[0], 3))
+pts3d[:, :pts_np.shape[1]] = pts_np
+vtk_pts.SetData(numpy_to_vtk(pts3d, deep=True))
+
+grid = vtk.vtkUnstructuredGrid()
+grid.SetPoints(vtk_pts)
+
+for cell_nodes in cells_np:
+    tri = vtk.vtkTriangle()
+    for j in range(3):
+        tri.GetPointIds().SetId(j, int(cell_nodes[j]))
+    grid.InsertNextCell(tri.GetCellType(), tri.GetPointIds())
+
+mag = np.sqrt(u_np[:, 0]**2 + u_np[:, 1]**2 + u_np[:, 2]**2 + u_np[:, 3]**2)
+arr_mag = numpy_to_vtk(mag, deep=True)
+arr_mag.SetName("mag_u")
+grid.GetPointData().AddArray(arr_mag)
+
+arr_sol = numpy_to_vtk(u_np, deep=True)
+arr_sol.SetName("u")
+grid.GetPointData().AddArray(arr_sol)
+
+for name, val in [("x_src", x_src), ("y_top", y_top),
+                  ("x_off", x_off), ("y_off", y_off),
+                  ("W", W), ("H", H),
+                  ("x_src_phys", x_src_phys), ("f_star", f_star)]:
+    vtk_arr = vtk.vtkDoubleArray()
+    vtk_arr.SetName(name)
+    vtk_arr.InsertNextValue(val)
+    grid.GetFieldData().AddArray(vtk_arr)
+
+vtk_path = f"output/results_{f_star:.2f}.vtk"
+writer = vtk.vtkUnstructuredGridWriter()
+writer.SetFileName(vtk_path)
+writer.SetInputData(grid)
+writer.Write()
+print(f"VTK saved → {vtk_path}")
+
+plot_vtk_results(vtk_path)
 
 # ═══════════════════════════════════════════════════════════════════════
-# 12.  Autograd-compatible loss function  (example)
+# Autograd-compatible loss function  (example)
 # ═══════════════════════════════════════════════════════════════════════
 
 def cloaking_loss(problem_instance, u_sol):
@@ -393,4 +619,4 @@ def cloaking_loss(problem_instance, u_sol):
 print("\n✓  Script finished.  Absorbing layers active on left / right / bottom.")
 print(f"   Domain:  {W_total:.2f} × {H_total:.2f}   (physical {W:.2f} × {H:.2f})")
 print(f"   PML thickness = {L_pml:.3f},  ξ_max = {xi_max},  ramp power = {pml_pow}")
-print(f"   Mesh:  {nx_total} × {ny_total} = {nx_total*ny_total} quads")
+print(f"   Mesh:  {mesh.cells.shape[0]} triangles (Gmsh-generated)")
