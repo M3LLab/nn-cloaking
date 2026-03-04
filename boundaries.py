@@ -135,7 +135,7 @@ def _in_defect(x):
 
 def F_tensor(x):
     """Deformation gradient of the triangular transformation."""
-    sign = jnp.sign(x[0] - x_c)
+    sign = jnp.where(x[0] >= x_c, 1.0, -1.0)
     F21  = sign * a / c
     F22  = (b - a) / b
     F_cloak = jnp.array([[1.0, 0.0],
