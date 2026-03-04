@@ -537,7 +537,7 @@ print("Results saved → output/results_{f_star:.2f}_{stamp}.npz")
 # print("Run `python plot_results.py` to generate plots.")
 
 from plot_results import plot_results, plot_vtk_results
-plot_results(f"output/results_{f_star:.2f}_{stamp}.npz")
+# plot_results(f"output/results_{f_star:.2f}_{stamp}.npz")
 
 # ── Save VTK with mesh connectivity (void is naturally visible) ──
 import vtk

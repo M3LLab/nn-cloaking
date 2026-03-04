@@ -267,10 +267,47 @@ def plot_vtk_results(vtk_path):
     ax.set_xlabel("x"); ax.set_ylabel("y")
     ax.set_aspect('equal')
 
-    fname_full = f"output/cloak_vtk_full_{stamp}.png"
+    fname_full = f"output/cloak_vtk_full.png" #_{stamp}
     fig.savefig(fname_full, dpi=200, bbox_inches='tight')
     plt.close(fig)
     print(f"VTK full-domain plot saved → {fname_full}")
+
+    # ── Full-domain plot of Re(u_y) ──────────────────────────────────────
+    u_full = vtk_to_numpy(grid.GetPointData().GetArray("u"))  # (num_nodes, 4)
+    re_uy = u_full[:, 1]  # Re(u_y)
+
+    cell_vals_re_uy_full = np.array([re_uy[cell_array[offsets[i]:offsets[i+1]]].mean()
+                                     for i in range(len(offsets) - 1)])
+
+    vlim_full = max(abs(re_uy.min()), abs(re_uy.max()))
+    norm_re_full = AsymSigmoidNorm(mid=0, steepness_left=100, steepness_right=100,
+                                   vmin=-vlim_full, vmax=vlim_full)
+
+    fig_rf, ax_rf = plt.subplots(figsize=(14, 5))
+    pc_rf = PolyCollection(quads, array=cell_vals_re_uy_full, cmap='RdBu_r',
+                           norm=norm_re_full, edgecolors='face', linewidths=0.1,
+                           rasterized=True)
+    ax_rf.add_collection(pc_rf)
+    ax_rf.autoscale_view()
+
+    ax_rf.plot(x_src, y_top, 'r*', markersize=16, label='source')
+    ax_rf.axvline(x_off, color='cyan', ls='--', lw=0.7, label='PML interface')
+    ax_rf.axvline(x_off + W, color='cyan', ls='--', lw=0.7)
+    ax_rf.axhline(y_off, color='cyan', ls='--', lw=0.7)
+    ax_rf.plot([x_c - c_cloak, x_c, x_c + c_cloak],
+               [y_top, y_top - b_cloak, y_top], ls='--', color='yellow', lw=1.2)
+    ax_rf.plot([x_c - c_cloak, x_c, x_c + c_cloak],
+               [y_top, y_top - a_cloak, y_top], ls='--', color='yellow', lw=1.2)
+
+    fig_rf.colorbar(pc_rf, ax=ax_rf, shrink=0.8, label='Re(u_y)')
+    ax_rf.set_title(f"Re(u_y) – Full domain  (f*={f_star})")
+    ax_rf.set_xlabel("x"); ax_rf.set_ylabel("y")
+    ax_rf.set_aspect('equal')
+
+    fname_re_full = f"output/cloak_vtk_re_uy_full.png"
+    fig_rf.savefig(fname_re_full, dpi=200, bbox_inches='tight')
+    plt.close(fig_rf)
+    print(f"VTK Re(u_y) full-domain plot saved → {fname_re_full}")
 
     # ── Physical-domain-only plot ────────────────────────────────────────
     # Keep cells whose centroid is inside physical domain
@@ -303,10 +340,75 @@ def plot_vtk_results(vtk_path):
     ax2.set_xlabel("x"); ax2.set_ylabel("y")
     ax2.set_aspect('equal')
 
-    fname_crop = f"output/cloak_vtk_phys_{stamp}.png"
+    fname_crop = f"output/cloak_vtk_phys.png" #_{stamp}
     fig2.savefig(fname_crop, dpi=200, bbox_inches='tight')
     plt.close(fig2)
     print(f"VTK physical-domain plot saved → {fname_crop}")
+
+    # ── Real part of u_y (physical domain) ──────────────────────────────
+    cell_vals_re = cell_vals_re_uy_full
+    phys_vals_re = cell_vals_re[phys_mask]
+
+    vlim = max(abs(phys_vals_re.min()), abs(phys_vals_re.max()))
+    # norm3 = Normalize(vmin=-vlim, vmax=vlim)
+    norm3 = AsymSigmoidNorm(mid=0, steepness_left=50, steepness_right=50, 
+                            vmin=-vlim, vmax=vlim)
+
+    fig3, ax3 = plt.subplots(figsize=(13, 4))
+    pc3 = PolyCollection(phys_quads, array=phys_vals_re, cmap='RdBu_r', norm=norm3,
+                         edgecolors='face', linewidths=0.1, rasterized=True)
+    ax3.add_collection(pc3)
+    ax3.autoscale_view()
+
+    ax3.plot(x_src_phys, H, 'r*', markersize=16)
+    ax3.plot([x_c_phys - c_cloak, x_c_phys, x_c_phys + c_cloak],
+             [H, H - b_cloak, H], ls='--', color='yellow', lw=1.2)
+    ax3.plot([x_c_phys - c_cloak, x_c_phys, x_c_phys + c_cloak],
+             [H, H - a_cloak, H], ls='--', color='yellow', lw=1.2)
+
+    fig3.colorbar(pc3, ax=ax3, shrink=0.8, label='Re(u_y)')
+    ax3.set_title(f"Re(u_y) – Physical domain  (f*={f_star})")
+    ax3.set_xlabel("x"); ax3.set_ylabel("y")
+    ax3.set_aspect('equal')
+
+    fname_re = f"output/cloak_vtk_re_uy.png"  #_{stamp}
+    fig3.savefig(fname_re, dpi=200, bbox_inches='tight')
+    plt.close(fig3)
+    print(f"VTK Re(u_y) plot saved → {fname_re}")
+
+    # ── Total real displacement magnitude (physical domain) ─────────────
+    re_ux = u_full[:, 0]  # Re(u_x)
+    re_mag = np.sqrt(re_ux**2 + re_uy**2)
+
+    cell_vals_re_mag = np.array([re_mag[cell_array[offsets[i]:offsets[i+1]]].mean()
+                                 for i in range(len(offsets) - 1)])
+    phys_vals_re_mag = cell_vals_re_mag[phys_mask]
+
+    norm4 = AsymSigmoidNorm(mid=0.25 * phys_vals_re_mag.max(), steepness_left=2,
+                            steepness_right=30, vmin=phys_vals_re_mag.min(),
+                            vmax=phys_vals_re_mag.max())
+
+    fig4, ax4 = plt.subplots(figsize=(13, 4))
+    pc4 = PolyCollection(phys_quads, array=phys_vals_re_mag, cmap='RdBu_r', norm=norm4,
+                         edgecolors='face', linewidths=0.1, rasterized=True)
+    ax4.add_collection(pc4)
+    ax4.autoscale_view()
+
+    ax4.plot(x_src_phys, H, 'r*', markersize=16)
+    ax4.plot([x_c_phys - c_cloak, x_c_phys, x_c_phys + c_cloak],
+             [H, H - b_cloak, H], ls='--', color='yellow', lw=1.2)
+    ax4.plot([x_c_phys - c_cloak, x_c_phys, x_c_phys + c_cloak],
+             [H, H - a_cloak, H], ls='--', color='yellow', lw=1.2)
+
+    fig4.colorbar(pc4, ax=ax4, shrink=0.8, label='|Re(u)|')
+    ax4.set_title(f"|Re(u)| – Physical domain  (f*={f_star})")
+    ax4.set_xlabel("x"); ax4.set_ylabel("y")
+    ax4.set_aspect('equal')
+
+    fname_re_mag = f"output/cloak_vtk_re_mag.png" #_{stamp}
+    fig4.savefig(fname_re_mag, dpi=200, bbox_inches='tight')
+    plt.close(fig4)
+    print(f"VTK |Re(u)| plot saved → {fname_re_mag}")
 
 
 if __name__ == "__main__":
