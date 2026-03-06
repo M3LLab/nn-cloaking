@@ -1,17 +1,24 @@
-"""
+"""Plotting utilities for simulation results.
+
+Delegates to the existing ``plot_results`` module when available, providing
+a thin wrapper that accepts a ``SolutionResult``.
+
 Plot displacement fields from saved simulation results.
 
 Usage:  python plot_results.py [path/to/results.npz]
         Defaults to output/results.npz if no argument given.
 """
+from __future__ import annotations
 
 import sys
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib.colors import PowerNorm, Normalize
 import matplotlib.colors as mcolors
+
+from rayleigh_cloak.io import save_vtk
+from rayleigh_cloak.solver import SolutionResult
 
 
 class SigmoidNorm(mcolors.Normalize):
@@ -23,7 +30,7 @@ class SigmoidNorm(mcolors.Normalize):
         Data value mapped to 0.5 in colour-space (the inflection point).
     steepness : float
         Controls how sharp the transition is.  Higher = more contrast at
-        the extremes, flatter middle.  Typical range: 5–30.
+        the extremes, flatter middle.  Typical range: 5-30.
     vmin, vmax : float
         Data range (as usual for Normalize).
     """
@@ -93,7 +100,7 @@ import os
 
 
 
-def plot_results(data_path):
+def plot_npz_results(data_path):
     d = np.load(data_path)
 
     u       = d['u']           # (num_nodes, 4)
@@ -411,9 +418,15 @@ def plot_vtk_results(vtk_path):
     print(f"VTK |Re(u)| plot saved → {fname_re_mag}")
 
 
+def plot_results(result: SolutionResult) -> None:
+    """Save VTK and call the standalone plotting code."""
+    vtk_path = save_vtk(result)
+    plot_vtk_results(vtk_path)
+
+
 if __name__ == "__main__":
     data_path = sys.argv[1] if len(sys.argv) > 1 else "output/results.npz"
     if data_path.endswith('.vtk'):
         plot_vtk_results(data_path)
     else:
-        plot_results(data_path)
+        plot_npz_results(data_path)

@@ -1,0 +1,57 @@
+"""Abstract interface for cloak geometries.
+
+Every geometry must provide:
+  - ``in_cloak`` / ``in_defect`` — region membership (JAX-traceable)
+  - ``F_tensor`` — deformation gradient of the coordinate transformation
+  - ``build_gmsh_geometry`` — adds the defect cutout + refinement fields to a
+    gmsh model and returns the list of top-surface line tags.
+"""
+
+from __future__ import annotations
+
+from typing import Protocol
+
+import jax.numpy as jnp
+
+
+class CloakGeometry(Protocol):
+    """Protocol that every cloak geometry must satisfy."""
+
+    def in_cloak(self, x: jnp.ndarray) -> jnp.ndarray:
+        """Return True (as a JAX bool) if *x* lies inside the cloak annulus."""
+        ...
+
+    def in_defect(self, x: jnp.ndarray) -> jnp.ndarray:
+        """Return True if *x* lies inside the hidden void."""
+        ...
+
+    def F_tensor(self, x: jnp.ndarray) -> jnp.ndarray:
+        """Deformation gradient of the coordinate transformation at *x*.
+
+        Returns ``(2, 2)`` array.  Must equal ``eye(2)`` outside the cloak.
+        """
+        ...
+
+    def build_gmsh_geometry(
+        self,
+        geo,
+        rect_points: tuple[int, int, int, int],
+        h_fine: float,
+        h_elem: float,
+    ) -> list[int]:
+        """Add geometry-specific features to the gmsh model.
+
+        Parameters
+        ----------
+        geo : gmsh.model.geo handle
+        rect_points : (p1, p2, p3, p4) — bottom-left, bottom-right,
+                       top-right, top-left corner point tags.
+        h_fine : target mesh size near the cloak
+        h_elem : background mesh size
+
+        Returns
+        -------
+        top_lines : list of gmsh line tags composing the top boundary
+                    (for surface-refinement and Neumann BC identification).
+        """
+        ...
