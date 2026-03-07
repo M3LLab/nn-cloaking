@@ -9,8 +9,11 @@ Usage:  python plot_results.py [path/to/results.npz]
         Defaults to output/results.npz if no argument given.
 """
 from __future__ import annotations
-
+import os
 import sys
+from datetime import datetime
+from typing import Literal
+
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -19,6 +22,9 @@ import matplotlib.colors as mcolors
 
 from rayleigh_cloak.io import save_vtk
 from rayleigh_cloak.solver import SolutionResult
+
+
+NormType = Literal['asym_sigmoid', 'sigmoid', 'linear']
 
 
 class SigmoidNorm(mcolors.Normalize):
@@ -95,12 +101,34 @@ class AsymSigmoidNorm(mcolors.Normalize):
         return np.ma.array(np.clip(result, 0, 1))
 
 
-from datetime import datetime
-import os
+def _build_norm(kind: NormType, vmin: float, vmax: float, mid: float,
+                symmetric: bool = False) -> mcolors.Normalize:
+    """Build a colormap normalizer.
+
+    Parameters
+    ----------
+    kind : {'asym_sigmoid', 'sigmoid', 'linear'}
+    vmin, vmax : data limits (after percentile clipping).
+    mid : inflection point for sigmoid norms.
+    symmetric : if True, use equal steepness on both sides (suited for
+        signed data centred at zero).
+    """
+    if kind == 'linear':
+        return mcolors.Normalize(vmin=vmin, vmax=vmax)
+    if kind == 'sigmoid':
+        steepness = 50 if symmetric else 10
+        return SigmoidNorm(mid=mid, steepness=steepness, vmin=vmin, vmax=vmax)
+    # default: 'asym_sigmoid'
+    if symmetric:
+        return AsymSigmoidNorm(mid=mid, steepness_left=50, steepness_right=50,
+                               vmin=vmin, vmax=vmax)
+    return AsymSigmoidNorm(mid=mid, steepness_left=2, steepness_right=30,
+                           vmin=vmin, vmax=vmax)
 
 
 
-def plot_npz_results(data_path):
+def plot_npz_results(data_path, percentile=95,
+                     norm_type: NormType = 'asym_sigmoid'):
     d = np.load(data_path)
 
     u       = d['u']           # (num_nodes, 4)
@@ -130,8 +158,9 @@ def plot_npz_results(data_path):
 
     # ── Full-domain plot ─────────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=(14, 5))
-    norm = AsymSigmoidNorm(mid=0.25*mag.max(), steepness_left=2, steepness_right=30,
-                        vmin=mag.min(), vmax=mag.max())
+    vmin_mag = np.percentile(mag, 100 - percentile)
+    vmax_mag = np.percentile(mag, percentile)
+    norm = _build_norm(norm_type, vmin_mag, vmax_mag, mid=0.25*vmax_mag)
     tc = ax.tricontourf(pts_x, pts_y, mag, levels=100, cmap='RdBu_r', norm=norm)
     ax.plot(x_src, y_top, 'r*', markersize=16, label='source')
 
@@ -168,8 +197,9 @@ def plot_npz_results(data_path):
     mag_phys = mag[phys_mask]
     # norm2 = SigmoidNorm(mid=0.2*mag_phys.max(), steepness=14,
     #                      vmin=mag_phys.min(), vmax=1*mag_phys.max())
-    norm2 = AsymSigmoidNorm(mid=0.25*mag_phys.max(), steepness_left=2, steepness_right=30,
-                        vmin=mag_phys.min(), vmax=mag_phys.max())
+    vmin_phys = np.percentile(mag_phys, 100 - percentile)
+    vmax_phys = np.percentile(mag_phys, percentile)
+    norm2 = _build_norm(norm_type, vmin_phys, vmax_phys, mid=0.25*vmax_phys)
 
     tc2 = ax2.tricontourf(pts_x[phys_mask] - x_off,
                         pts_y[phys_mask] - y_off,
@@ -200,7 +230,8 @@ def plot_npz_results(data_path):
     print(f"Physical-domain plot saved → {fname_crop}")
 
 
-def plot_vtk_results(vtk_path):
+def plot_vtk_results(vtk_path, percentile=95,
+                     norm_type: NormType = 'asym_sigmoid'):
     """Plot displacement field from a VTK file using actual mesh connectivity."""
     import vtk as _vtk
     from vtk.util.numpy_support import vtk_to_numpy
@@ -251,8 +282,9 @@ def plot_vtk_results(vtk_path):
     stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
     # ── Full-domain plot ─────────────────────────────────────────────────
-    norm = AsymSigmoidNorm(mid=0.25 * mag.max(), steepness_left=2,
-                           steepness_right=30, vmin=mag.min(), vmax=mag.max())
+    vmin_mag = np.percentile(mag, 100 - percentile)
+    vmax_mag = np.percentile(mag, percentile)
+    norm = _build_norm(norm_type, vmin_mag, vmax_mag, mid=0.25 * vmax_mag)
 
     fig, ax = plt.subplots(figsize=(14, 5))
     pc = PolyCollection(quads, array=cell_vals, cmap='RdBu_r', norm=norm,
@@ -286,9 +318,8 @@ def plot_vtk_results(vtk_path):
     cell_vals_re_uy_full = np.array([re_uy[cell_array[offsets[i]:offsets[i+1]]].mean()
                                      for i in range(len(offsets) - 1)])
 
-    vlim_full = max(abs(re_uy.min()), abs(re_uy.max()))
-    norm_re_full = AsymSigmoidNorm(mid=0, steepness_left=100, steepness_right=100,
-                                   vmin=-vlim_full, vmax=vlim_full)
+    vlim_full = np.percentile(np.abs(re_uy), percentile)
+    norm_re_full = _build_norm(norm_type, -vlim_full, vlim_full, mid=0, symmetric=True)
 
     fig_rf, ax_rf = plt.subplots(figsize=(14, 5))
     pc_rf = PolyCollection(quads, array=cell_vals_re_uy_full, cmap='RdBu_r',
@@ -326,8 +357,9 @@ def plot_vtk_results(vtk_path):
     phys_quads = [quads[i] - np.array([x_off, y_off]) for i in range(len(quads)) if phys_mask[i]]
     phys_vals = cell_vals[phys_mask]
 
-    norm2 = AsymSigmoidNorm(mid=0.25 * phys_vals.max(), steepness_left=2,
-                            steepness_right=30, vmin=phys_vals.min(), vmax=phys_vals.max())
+    vmin_pv = np.percentile(phys_vals, 100 - percentile)
+    vmax_pv = np.percentile(phys_vals, percentile)
+    norm2 = _build_norm(norm_type, vmin_pv, vmax_pv, mid=0.25 * vmax_pv)
 
     fig2, ax2 = plt.subplots(figsize=(13, 4))
     pc2 = PolyCollection(phys_quads, array=phys_vals, cmap='RdBu_r', norm=norm2,
@@ -356,10 +388,8 @@ def plot_vtk_results(vtk_path):
     cell_vals_re = cell_vals_re_uy_full
     phys_vals_re = cell_vals_re[phys_mask]
 
-    vlim = max(abs(phys_vals_re.min()), abs(phys_vals_re.max()))
-    # norm3 = Normalize(vmin=-vlim, vmax=vlim)
-    norm3 = AsymSigmoidNorm(mid=0, steepness_left=50, steepness_right=50, 
-                            vmin=-vlim, vmax=vlim)
+    vlim = np.percentile(np.abs(phys_vals_re), percentile)
+    norm3 = _build_norm(norm_type, -vlim, vlim, mid=0, symmetric=True)
 
     fig3, ax3 = plt.subplots(figsize=(13, 4))
     pc3 = PolyCollection(phys_quads, array=phys_vals_re, cmap='RdBu_r', norm=norm3,
@@ -391,9 +421,9 @@ def plot_vtk_results(vtk_path):
                                  for i in range(len(offsets) - 1)])
     phys_vals_re_mag = cell_vals_re_mag[phys_mask]
 
-    norm4 = AsymSigmoidNorm(mid=0.25 * phys_vals_re_mag.max(), steepness_left=2,
-                            steepness_right=30, vmin=phys_vals_re_mag.min(),
-                            vmax=phys_vals_re_mag.max())
+    vmin_rm = np.percentile(phys_vals_re_mag, 100 - percentile)
+    vmax_rm = np.percentile(phys_vals_re_mag, percentile)
+    norm4 = _build_norm(norm_type, vmin_rm, vmax_rm, mid=0.25 * vmax_rm)
 
     fig4, ax4 = plt.subplots(figsize=(13, 4))
     pc4 = PolyCollection(phys_quads, array=phys_vals_re_mag, cmap='RdBu_r', norm=norm4,
@@ -418,15 +448,18 @@ def plot_vtk_results(vtk_path):
     print(f"VTK |Re(u)| plot saved → {fname_re_mag}")
 
 
-def plot_results(result: SolutionResult) -> None:
+def plot_results(result: SolutionResult, percentile: float = 95,
+                 norm_type: NormType = 'linear') -> None:
     """Save VTK and call the standalone plotting code."""
     vtk_path = save_vtk(result)
-    plot_vtk_results(vtk_path)
+    plot_vtk_results(vtk_path, percentile=percentile, norm_type=norm_type)
 
 
 if __name__ == "__main__":
     data_path = sys.argv[1] if len(sys.argv) > 1 else "output/results.npz"
+    percentile = float(sys.argv[2]) if len(sys.argv) > 2 else 95
+    norm_type: NormType = sys.argv[3] if len(sys.argv) > 3 else 'asym_sigmoid'  # type: ignore[assignment]
     if data_path.endswith('.vtk'):
-        plot_vtk_results(data_path)
+        plot_vtk_results(data_path, percentile=percentile, norm_type=norm_type)
     else:
-        plot_npz_results(data_path)
+        plot_npz_results(data_path, percentile=percentile, norm_type=norm_type)
