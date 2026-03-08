@@ -34,13 +34,22 @@ class RayleighCloakProblem(Problem):
         geo = self._geometry
         C0 = self._C0
         rho0 = self._rho0
+        is_ref = self._is_reference
         xi_fn = type(self).__dict__['_xi_fn']
 
-        def _C_eff_pt(x):
-            return C_eff(x, geo, C0)
+        if is_ref:
+            # Reference case: uniform material everywhere
+            def _C_eff_pt(x):
+                return C0
 
-        def _rho_eff_pt(x):
-            return rho_eff(x, geo, rho0)
+            def _rho_eff_pt(x):
+                return rho0
+        else:
+            def _C_eff_pt(x):
+                return C_eff(x, geo, C0)
+
+            def _rho_eff_pt(x):
+                return rho_eff(x, geo, rho0)
 
         self.internal_vars = [
             jax.vmap(jax.vmap(_C_eff_pt))(self.physical_quad_points),
@@ -143,6 +152,7 @@ def build_problem(
     # calls custom_init.
     RayleighCloakProblem._omega = params.omega
     RayleighCloakProblem._geometry = geometry
+    RayleighCloakProblem._is_reference = cfg.is_reference
     RayleighCloakProblem._C0 = C0
     RayleighCloakProblem._rho0 = params.rho0
     RayleighCloakProblem._xi_fn = make_xi_profile(params)

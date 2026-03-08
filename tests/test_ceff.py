@@ -68,7 +68,7 @@ def C_eff_numerical(x):
     """Einsum-based C_eff from boundaries.py."""
     F   = F_tensor(x)
     J   = jnp.linalg.det(F)
-    Cnew = jnp.einsum('iI,kK,IjKl->ijkl', F, F, C0) / J
+    Cnew = jnp.einsum('jJ,lL,iJkL->ijkl', F, F, C0) / J
     return jnp.where(_in_cloak(x), Cnew, C0)
 
 def C_eff_analytical(x):
@@ -80,23 +80,23 @@ def C_eff_analytical(x):
     return jnp.array([
         [(lam + 2*mu)/F22,
          lam,
-         0.0,
-         (F21/F22)*(lam + 2*mu)],
+         (F21/F22)*(lam + 2*mu),
+         0.0],
 
         [lam,
          (F21**2 * mu + F22**2 * (lam + 2*mu)) / F22,
-         (F21/F22)*mu,
-         F21*(lam + mu)],
-
-        [0.0,
-         (F21/F22)*mu,
-         mu/F22,
-         mu],
+         F21*(lam + mu),
+         (F21/F22)*mu],
 
         [(F21/F22)*(lam + 2*mu),
          F21*(lam + mu),
+         (F21**2 * (lam + 2*mu) + F22**2 * mu) / F22,
+         mu],
+
+        [0.0,
+         (F21/F22)*mu,
          mu,
-         (F21**2 * (lam + 2*mu) + F22**2 * mu) / F22]
+         mu/F22]
     ])
 
 # ── Helper to get a point inside the cloak ──

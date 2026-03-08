@@ -80,7 +80,7 @@ def C_eff(
     """Effective stiffness tensor at position *x*."""
     F = geometry.F_tensor(x)
     J = jnp.linalg.det(F)
-    Cnew = jnp.einsum("iI,kK,IjKl->ijkl", F, F, C0) / J
+    Cnew = jnp.einsum("jJ,lL,iJkL->ijkl", F, F, C0) / J
     if symmetrize:
         Cnew = symmetrize_stiffness(Cnew)
     return jnp.where(geometry.in_cloak(x), Cnew, C0)

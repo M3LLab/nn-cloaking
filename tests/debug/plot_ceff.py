@@ -70,8 +70,8 @@ def C_eff_full(x, y):
 
     det = F[..., 0, 0] * F[..., 1, 1] - F[..., 0, 1] * F[..., 1, 0]
 
-    # Cosserat push-forward: C_eff[i,j,k,l] = F[i,I] F[k,K] C0[I,j,K,l] / J
-    Cnew = np.einsum('...iI,...kK,IjKl->...ijkl', F, F, C0)
+    # Cosserat push-forward: C_eff[i,j,k,l] = F[j,J] F[l,L] C0[i,J,k,L] / J
+    Cnew = np.einsum('...jJ,...lL,iJkL->...ijkl', F, F, C0)
     Cnew = Cnew / det[..., None, None, None, None]
 
     # Outside cloak: use C0
