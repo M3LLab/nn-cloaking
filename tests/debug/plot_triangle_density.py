@@ -46,13 +46,18 @@ N = 500
 xs = np.linspace(x_min, x_max, N)
 pts = jnp.array([[x, y_scan] for x in xs])
 
-rho_vals = np.array([float(rho_eff(p, geo, params.rho0)) for p in pts])
+rho_tensors = np.array([np.array(rho_eff(p, geo, params.rho0)) for p in pts])  # (N, 2, 2)
 
 # ── plot ──────────────────────────────────────────────────────────────
 
 fig, ax = plt.subplots(figsize=(10, 4))
 
-ax.plot(xs, rho_vals, color="steelblue", lw=1.8, label=r"$\rho_\mathrm{eff}$")
+# plot all four tensor components
+labels = [("xx", 0, 0), ("xy", 0, 1), ("yx", 1, 0), ("yy", 1, 1)]
+colors = ["steelblue", "C1", "C2", "C3"]
+for (lbl, i, j), col in zip(labels, colors):
+    ax.plot(xs, rho_tensors[:, i, j], color=col, lw=1.8,
+            label=rf"$\rho_{{{lbl}}}$")
 ax.axhline(params.rho0, color="grey", ls=":", lw=1.0, label=r"$\rho_0$")
 
 # triangle base corners (free-surface footprint) – hardcoded
@@ -67,7 +72,7 @@ if r_inner > 0:
     ax.axvline(x_inner_r, color="C3", ls=":", lw=1.2)
 
 ax.set_xlabel("x  [m]")
-ax.set_ylabel(r"$\rho_\mathrm{eff}$  [kg/m³]")
+ax.set_ylabel(r"$\rho_\mathrm{eff}$ tensor components  [kg/m³]")
 ax.set_title(
     f"Effective density along horizontal scan at depth {scan_depth:.4f} m "
     f"(y = y_top − {scan_depth:.4f})\n"

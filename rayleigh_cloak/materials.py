@@ -80,7 +80,7 @@ def C_eff(
     """Effective stiffness tensor at position *x*."""
     F = geometry.F_tensor(x)
     J = jnp.linalg.det(F)
-    Cnew = jnp.einsum("iI,kK,IjKl->ijkl", F, F, C0) / J
+    Cnew = jnp.einsum("iI,jJ,kK,lL,IJKL->ijkl", F, F, F, F, C0) / J
     if symmetrize:
         Cnew = symmetrize_stiffness(Cnew)
     return jnp.where(geometry.in_cloak(x), Cnew, C0)
@@ -91,8 +91,12 @@ def rho_eff(
     geometry: CloakGeometry,
     rho0: float,
 ) -> jnp.ndarray:
-    """Effective density at position *x*."""
+    """Effective density tensor (2×2) at position *x*.
+
+    From transformational elasticity: ρ_eff = ρ₀ (F Fᵀ) / J.
+    Outside the cloak this reduces to ρ₀ I.
+    """
     F = geometry.F_tensor(x)
     J = jnp.linalg.det(F)
-    rho_cloak = rho0 / J
-    return jnp.where(geometry.in_cloak(x), rho_cloak, rho0)
+    rho_cloak = rho0 * (F @ F.T) / J
+    return jnp.where(geometry.in_cloak(x), rho_cloak, rho0 * jnp.eye(2))

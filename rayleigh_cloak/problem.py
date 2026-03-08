@@ -68,8 +68,8 @@ class RayleighCloakProblem(Problem):
 
         def inertia(u, _x, _C_q, rho_q, xi_q):
             u_R, u_I = u[:2], u[2:]
-            m_R = -omega ** 2 * rho_q * (u_R + xi_q * u_I)
-            m_I = -omega ** 2 * rho_q * (u_I - xi_q * u_R)
+            m_R = -omega ** 2 * (rho_q @ u_R + xi_q * (rho_q @ u_I))
+            m_I = -omega ** 2 * (rho_q @ u_I - xi_q * (rho_q @ u_R))
             return jnp.concatenate([m_R, m_I])
 
         return inertia
