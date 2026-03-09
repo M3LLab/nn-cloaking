@@ -39,7 +39,7 @@ class CloakGeometry(Protocol):
         h_fine: float,
         h_elem: float,
     ) -> list[int]:
-        """Add geometry-specific features to the gmsh model.
+        """Add geometry-specific features to the gmsh model (with defect cutout).
 
         Parameters
         ----------
@@ -53,5 +53,22 @@ class CloakGeometry(Protocol):
         -------
         top_lines : list of gmsh line tags composing the top boundary
                     (for surface-refinement and Neumann BC identification).
+        """
+        ...
+
+    def build_gmsh_geometry_full(
+        self,
+        geo,
+        rect_points: tuple[int, int, int, int],
+        h_fine: float,
+        h_elem: float,
+    ) -> list[int]:
+        """Build full domain (no defect cutout) with cloak vertices embedded.
+
+        The mesh includes the defect region so that both reference and cloak
+        solves can share the same node positions.  Elements inside the defect
+        are later removed via ``extract_submesh``.
+
+        Parameters / Returns same as ``build_gmsh_geometry``.
         """
         ...

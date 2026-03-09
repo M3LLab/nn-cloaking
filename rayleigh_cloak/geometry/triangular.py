@@ -131,3 +131,75 @@ class TriangularCloakGeometry:
         self._cloak_field_tag = f_thresh_cloak
 
         return [l_top1, l_top2]
+
+    def build_gmsh_geometry_full(
+        self,
+        geo,
+        rect_points: tuple[int, int, int, int],
+        h_fine: float,
+        h_elem: float,
+    ) -> list[int]:
+        """Build full domain mesh (no defect cutout) with cloak vertices embedded.
+
+        The inner triangle vertices are embedded as mesh points so that the
+        mesh refines around the cloak region, but no hole is cut.  This lets
+        both reference and cloak solves share identical node positions.
+        """
+        p1, p2, p3, p4 = rect_points
+
+        # Triangle vertices on the free surface and apices
+        pt_left = geo.addPoint(self.x_c - self.c, self.y_top, 0.0, h_fine)
+        pt_right = geo.addPoint(self.x_c + self.c, self.y_top, 0.0, h_fine)
+        pt_apex = geo.addPoint(self.x_c, self.y_top - self.a, 0.0, h_fine)
+        oc_apex = geo.addPoint(self.x_c, self.y_top - self.b, 0.0, h_fine)
+
+        # Full rectangle — top edge split at cloak opening points for
+        # consistent node placement with the cutout mesh
+        l_bot = geo.addLine(p1, p2)
+        l_right = geo.addLine(p2, p3)
+        l_top1 = geo.addLine(p3, pt_right)
+        l_top_mid = geo.addLine(pt_right, pt_left)
+        l_top2 = geo.addLine(pt_left, p4)
+        l_left = geo.addLine(p4, p1)
+
+        outer_loop = geo.addCurveLoop([
+            l_bot, l_right, l_top1, l_top_mid, l_top2, l_left
+        ])
+        surf = geo.addPlaneSurface([outer_loop])
+
+        gmsh.model.geo.synchronize()
+
+        # Embed cloak vertices so the mesh refines around them
+        geo.synchronize()
+        gmsh.model.mesh.embed(0, [pt_apex, oc_apex], 2, surf)
+
+        # Inner triangle edges as embedded lines for mesh conformity
+        tl_right = geo.addLine(pt_right, pt_apex)
+        tl_left = geo.addLine(pt_apex, pt_left)
+        geo.synchronize()
+        gmsh.model.mesh.embed(1, [tl_right, tl_left], 2, surf)
+
+        # ── refinement fields (same as cutout version) ──
+        f_dist_inner = gmsh.model.mesh.field.add("Distance")
+        gmsh.model.mesh.field.setNumbers(
+            f_dist_inner, "CurvesList", [tl_right, tl_left])
+        gmsh.model.mesh.field.setNumber(f_dist_inner, "Sampling", 100)
+
+        f_dist_outer = gmsh.model.mesh.field.add("Distance")
+        gmsh.model.mesh.field.setNumbers(
+            f_dist_outer, "PointsList", [pt_left, pt_right, oc_apex])
+
+        f_dist_cloak = gmsh.model.mesh.field.add("Min")
+        gmsh.model.mesh.field.setNumbers(
+            f_dist_cloak, "FieldsList", [f_dist_inner, f_dist_outer])
+
+        f_thresh_cloak = gmsh.model.mesh.field.add("Threshold")
+        gmsh.model.mesh.field.setNumber(f_thresh_cloak, "InField", f_dist_cloak)
+        gmsh.model.mesh.field.setNumber(f_thresh_cloak, "SizeMin", h_fine)
+        gmsh.model.mesh.field.setNumber(f_thresh_cloak, "SizeMax", h_elem)
+        gmsh.model.mesh.field.setNumber(f_thresh_cloak, "DistMin", 0.0)
+        gmsh.model.mesh.field.setNumber(f_thresh_cloak, "DistMax", self.b * 2.0)
+
+        self._cloak_field_tag = f_thresh_cloak
+
+        return [l_top1, l_top_mid, l_top2]

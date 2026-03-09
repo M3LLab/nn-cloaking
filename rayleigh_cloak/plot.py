@@ -448,6 +448,68 @@ def plot_vtk_results(vtk_path, percentile=95,
     print(f"VTK |Re(u)| plot saved → {fname_re_mag}")
 
 
+def plot_displacement_field(
+    u: np.ndarray,
+    pts_x: np.ndarray,
+    pts_y: np.ndarray,
+    params,
+    save_path: str,
+    title: str = "|Re(u)|",
+    percentile: float = 95,
+    norm_type: NormType = 'linear',
+) -> None:
+    """Plot |Re(u)| in the physical domain and save to *save_path*.
+
+    Parameters
+    ----------
+    u : (num_nodes, 4)  — DOFs [Re(ux), Re(uy), Im(ux), Im(uy)]
+    pts_x, pts_y : node coordinates
+    params : DerivedParams (for domain extents and cloak geometry)
+    save_path : output PNG path
+    """
+    re_ux, re_uy = u[:, 0], u[:, 1]
+    re_mag = np.sqrt(re_ux ** 2 + re_uy ** 2)
+
+    x_off, y_off = params.x_off, params.y_off
+    W, H = params.W, params.H
+
+    # Physical-domain mask
+    phys = ((pts_x >= x_off - 1e-8) & (pts_x <= x_off + W + 1e-8) &
+            (pts_y >= y_off - 1e-8))
+
+    px = pts_x[phys] - x_off
+    py = pts_y[phys] - y_off
+    pv = re_mag[phys]
+
+    vmin_v = np.percentile(pv, 100 - percentile)
+    vmax_v = np.percentile(pv, percentile)
+    norm = _build_norm(norm_type, vmin_v, vmax_v, mid=0.25 * vmax_v)
+
+    fig, ax = plt.subplots(figsize=(13, 4))
+    tc = ax.tricontourf(px, py, pv, levels=100, cmap='RdBu_r', norm=norm)
+
+    # Source marker
+    ax.plot(params.x_src - x_off, H, 'r*', markersize=12)
+
+    # Cloak outline (physical coords)
+    a, b, c_hw = params.a, params.b, params.c
+    xc = W / 2.0
+    ax.plot([xc - c_hw, xc, xc + c_hw], [H, H - b, H],
+            ls='--', color='yellow', lw=1.2)
+    ax.plot([xc - c_hw, xc, xc + c_hw], [H, H - a, H],
+            ls='--', color='yellow', lw=1.2)
+
+    fig.colorbar(tc, ax=ax, shrink=0.8, label='|Re(u)|')
+    ax.set_title(title)
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_aspect('equal')
+
+    os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+    fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+
 def plot_results(result: SolutionResult, percentile: float = 95,
                  norm_type: NormType = 'linear') -> None:
     """Save VTK and call the standalone plotting code."""

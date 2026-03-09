@@ -18,9 +18,10 @@ from jax_fem.generate_mesh import Mesh
 from jax_fem.problem import Problem
 
 from rayleigh_cloak.absorbing import make_xi_profile
+from rayleigh_cloak.cells import CellDecomposition
 from rayleigh_cloak.config import DerivedParams, SimulationConfig
 from rayleigh_cloak.geometry.base import CloakGeometry
-from rayleigh_cloak.materials import C_eff, C_iso, rho_eff
+from rayleigh_cloak.materials import C_eff, C_iso, rho_eff, _get_converters
 
 
 class RayleighCloakProblem(Problem):
@@ -38,7 +39,6 @@ class RayleighCloakProblem(Problem):
         xi_fn = type(self).__dict__['_xi_fn']
 
         if is_ref:
-            # Reference case: uniform material everywhere
             def _C_eff_pt(x):
                 return C0
 
@@ -51,11 +51,46 @@ class RayleighCloakProblem(Problem):
             def _rho_eff_pt(x):
                 return rho_eff(x, geo, rho0)
 
+        xi_qp = jax.vmap(jax.vmap(xi_fn))(self.physical_quad_points)
+        self._xi_qp = xi_qp  # stored separately for set_params
+
+        # Precompute cell mapping if cell decomposition is available
+        cell_decomp = getattr(type(self), '_cell_decomp', None)
+        if cell_decomp is not None:
+            import numpy as np
+            self._qp_to_cell = jnp.array(
+                cell_decomp.build_qp_mapping(np.asarray(self.physical_quad_points))
+            )
+
         self.internal_vars = [
             jax.vmap(jax.vmap(_C_eff_pt))(self.physical_quad_points),
             jax.vmap(jax.vmap(_rho_eff_pt))(self.physical_quad_points),
-            jax.vmap(jax.vmap(xi_fn))(self.physical_quad_points),
+            xi_qp,
         ]
+
+    def set_params(self, params):
+        """Map cell-based material params to internal_vars at quadrature points.
+
+        Parameters
+        ----------
+        params : (cell_C_flat, cell_rho) where
+            cell_C_flat : (n_cells, n_C_params)
+            cell_rho    : (n_cells,)
+        """
+        cell_C_flat, cell_rho = params
+        cell_decomp = type(self)._cell_decomp
+        _, from_flat = _get_converters(type(self)._n_C_params)
+
+        # Convert flat params → full (2,2,2,2) tensors per cell
+        cell_C_full = jax.vmap(from_flat)(cell_C_flat)  # (n_cells, 2,2,2,2)
+
+        # Expand to quadrature points via precomputed mapping
+        C_qp = cell_decomp.expand_to_quadpoints(
+            cell_C_full, self._qp_to_cell, self._C0)
+        rho_qp = cell_decomp.expand_to_quadpoints(
+            cell_rho, self._qp_to_cell, self._rho0)
+
+        self.internal_vars = [C_qp, rho_qp, self._xi_qp]
 
     def get_tensor_map(self):
         def stress(u_grad, C_q, _rho_q, xi_q):
@@ -144,12 +179,17 @@ def build_problem(
     cfg: SimulationConfig,
     params: DerivedParams,
     geometry: CloakGeometry,
+    cell_decomp: CellDecomposition | None = None,
 ) -> RayleighCloakProblem:
-    """Assemble a ``RayleighCloakProblem`` ready for solving."""
+    """Assemble a ``RayleighCloakProblem`` ready for solving.
+
+    Parameters
+    ----------
+    cell_decomp : optional
+        If provided, enables ``set_params`` for cell-based optimisation.
+    """
     C0 = C_iso(params.lam, params.mu)
 
-    # Inject dependencies via instance attributes *before* Problem.__init__
-    # calls custom_init.
     RayleighCloakProblem._omega = params.omega
     RayleighCloakProblem._geometry = geometry
     RayleighCloakProblem._is_reference = cfg.is_reference
@@ -159,6 +199,8 @@ def build_problem(
     RayleighCloakProblem._x_src = params.x_src
     RayleighCloakProblem._sigma_src = params.sigma_src
     RayleighCloakProblem._F0 = params.F0
+    RayleighCloakProblem._cell_decomp = cell_decomp
+    RayleighCloakProblem._n_C_params = cfg.cells.n_C_params
 
     problem = RayleighCloakProblem(
         mesh=mesh,

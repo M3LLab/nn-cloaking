@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import yaml
@@ -63,6 +64,23 @@ class SolverConfig(BaseModel):
     pc_type: str = "lu"
 
 
+class CellConfig(BaseModel):
+    """Cell-based material decomposition of the cloak region."""
+    enabled: bool = False
+    n_x: int = 10                        # cells in x direction within cloak bbox
+    n_y: int = 10                        # cells in y direction
+    n_C_params: Literal[4, 6, 10, 16] = 6   # 6=block-diag Cosserat (recommended), 16=full voigt4
+
+
+class OptimizationConfig(BaseModel):
+    """Settings for cell-based material optimization."""
+    n_iters: int = 100
+    lr: float = 1e-3
+    lambda_l2: float = 1e-4       # L2 regularization (drift from init)
+    lambda_neighbor: float = 1e-3  # neighbor smoothness regularization
+    plot_every: int = 1            # plot |Re(u)| every N steps (0 = disabled)
+
+
 class SimulationConfig(BaseModel):
     is_reference: bool = False
     geometry_type: str = "triangular"
@@ -74,6 +92,8 @@ class SimulationConfig(BaseModel):
     mesh: MeshConfig = MeshConfig()
     source: SourceConfig = SourceConfig()
     solver: SolverConfig = SolverConfig()
+    cells: CellConfig = CellConfig()
+    optimization: OptimizationConfig = OptimizationConfig()
     output_dir: str = "output"
 
 
