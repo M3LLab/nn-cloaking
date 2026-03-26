@@ -32,6 +32,19 @@ Instead of optimizing 70K raw cell parameters, parameterize the material field w
 
 A small MLP (3-4 layers, ~256 hidden) with ~50K weights implicitly enforces smoothness (no need for neighbor regularization) and reduces the effective dimensionality. You still optimize with Adam through the adjoint — the NN is just a reparameterization, not a surrogate. This is sometimes called **neural implicit representation** for inverse problems.
 
+#### HAsh-grid INR
+ https://arxiv.org/abs/2309.15848
+
+
+#### WIRE: Wavelet INR
+ https://arxiv.org/abs/2301.05187
+
+#### SIREN: Sin INR
+
+
+#### Stochastic parameter decomposition
+ https://www.emergentmind.com/topics/stochastic-parameter-decomposition-spd
+
 ### 3. Multi-fidelity / coarse-to-fine
 - Start optimization on a coarser mesh (40×40 cells, coarser FEM mesh) — maybe 0.5s/step
 - After convergence, upsample and refine on the full 80×80 mesh

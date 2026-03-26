@@ -93,24 +93,28 @@ class NeuralReparam:
     cell_features: jnp.ndarray
     C_flat_init: jnp.ndarray
     rho_init: jnp.ndarray
-    C_scale: jnp.ndarray
-    rho_scale: float
     cloak_mask: jnp.ndarray
+    output_scale: float = 0.1
 
     def decode(self, theta: list[dict]) -> tuple[jnp.ndarray, jnp.ndarray]:
         """Map MLP weights → (cell_C_flat, cell_rho).
 
-        The MLP outputs a residual that is scaled and added to the initial
-        values.  Non-cloak cells keep their initial (background) values.
+        Uses a *relative* (multiplicative) residual so that the correction
+        is proportional to the local initial value:
+            C(x,y) = C_init(x,y) * (1 + output_scale * Phi(x,y))
+        This handles the orders-of-magnitude variation in C_eff across the
+        cloak (near-zero at r_i, ~background at r_c) without needing
+        per-component normalization.
+        Non-cloak cells keep their initial (background) values.
         """
         raw = mlp_forward(theta, self.cell_features)  # (n_cells, n_C_params+1)
         n_C = self.C_flat_init.shape[1]
 
-        delta_C = raw[:, :n_C] * self.C_scale[None, :]
-        delta_rho = raw[:, n_C] * self.rho_scale
+        rel_C = raw[:, :n_C] * self.output_scale    # relative correction
+        rel_rho = raw[:, n_C] * self.output_scale
 
-        cell_C = self.C_flat_init + delta_C * self.cloak_mask[:, None]
-        cell_rho = self.rho_init + delta_rho * self.cloak_mask
+        cell_C = self.C_flat_init * (1.0 + rel_C * self.cloak_mask[:, None])
+        cell_rho = self.rho_init * (1.0 + rel_rho * self.cloak_mask)
 
         return (cell_C, cell_rho)
 
@@ -122,6 +126,7 @@ def make_neural_reparam(
     n_layers: int = 4,
     n_fourier: int = 32,
     seed: int = 42,
+    output_scale: float = 0.1,
 ) -> tuple[list[dict], NeuralReparam]:
     """Create a NeuralReparam and initialize the MLP weights.
 
@@ -143,17 +148,7 @@ def make_neural_reparam(
     features = fourier_features(centers_norm, n_fourier)
     n_features = features.shape[1]
 
-    # Compute scale from cloak-cell variation
     mask = jnp.array(cell_decomp.cloak_mask)
-    cloak_idx = jnp.where(mask)[0]
-    if len(cloak_idx) > 1:
-        C_cloak = cell_C_init[cloak_idx]
-        rho_cloak = cell_rho_init[cloak_idx]
-        C_scale = jnp.std(C_cloak, axis=0) + 1e-10
-        rho_scale = float(jnp.std(rho_cloak)) + 1e-10
-    else:
-        C_scale = jnp.ones(n_C_params)
-        rho_scale = 1.0
 
     # MLP: features → hidden → ... → hidden → n_out
     layer_sizes = [n_features] + [hidden_size] * (n_layers - 1) + [n_out]
@@ -168,9 +163,8 @@ def make_neural_reparam(
         cell_features=features,
         C_flat_init=cell_C_init,
         rho_init=cell_rho_init,
-        C_scale=C_scale,
-        rho_scale=rho_scale,
         cloak_mask=mask,
+        output_scale=output_scale,
     )
 
     return theta, reparam

@@ -318,6 +318,7 @@ def solve_optimization_neural(
         n_layers=neural_cfg.n_layers,
         n_fourier=neural_cfg.n_fourier,
         seed=neural_cfg.seed,
+        output_scale=neural_cfg.output_scale,
     )
     n_weights = sum(p["W"].size + p["b"].size for p in theta_init)
     print(f"  MLP: {neural_cfg.n_layers} layers, "

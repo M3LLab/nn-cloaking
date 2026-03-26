@@ -92,6 +92,7 @@ class NeuralReparamConfig(BaseModel):
     n_layers: int = 4
     n_fourier: int = 32
     seed: int = 42
+    output_scale: float = 0.1  # multiplier on MLP residual (controls max step size)
 
 
 class OptimizationConfig(BaseModel):

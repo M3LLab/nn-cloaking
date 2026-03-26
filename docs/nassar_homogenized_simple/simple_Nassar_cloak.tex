@@ -85,65 +85,65 @@ and density vanish while the tangential stiffness diverges ---
 perfect cloaking requires this singular behaviour, which can only be
 approximated by a finite lattice.
 
-\subsection{The Nassar degenerate polar lattice}
+% \subsection{The Nassar degenerate polar lattice}
 
-Nassar et al.~\cite{nassar2018} propose a lattice whose unit cell
-contains a rigid rectangular mass with two diagonal springs of
-constant~$\alpha$, one vertical spring of constant~$\beta$, and a
-torsion spring of constant~$\kappa$.
-The lattice is rectangular with cell dimensions $a$ (radial) and
-$b$ (tangential), tilted at angle~$\theta$ to the radial direction
-(Fig.~\ref{fig:polar_lattice}).
+% Nassar et al.~\cite{nassar2018} propose a lattice whose unit cell
+% contains a rigid rectangular mass with two diagonal springs of
+% constant~$\alpha$, one vertical spring of constant~$\beta$, and a
+% torsion spring of constant~$\kappa$.
+% The lattice is rectangular with cell dimensions $a$ (radial) and
+% $b$ (tangential), tilted at angle~$\theta$ to the radial direction
+% (Fig.~\ref{fig:polar_lattice}).
 
-The lattice's effective Hooke's law in augmented Voigt is
-\be\label{eq:nassar_forward}
-  \mbf{c}_{\mathrm{lat}}
-  =
-  \begin{bmatrix}
-    r\,c^2\alpha & cs\alpha & 0 & 0 \\
-    cs\alpha & (\alpha s^2{+}2\beta)/r & 0 & 0 \\
-    0 & 0 & c^2\alpha\kappa/\Delta & r\,cs\alpha\kappa/\Delta \\
-    0 & 0 & r\,cs\alpha\kappa/\Delta & r^2 s^2\alpha\kappa/\Delta
-  \end{bmatrix},
-\ee
-where $c = \cos\theta$, $s = \sin\theta$, $r = a/b$ is the cell
-aspect ratio, and $\Delta = \alpha(c-rs)^2 + r\kappa$.
+% The lattice's effective Hooke's law in augmented Voigt is
+% \be\label{eq:nassar_forward}
+%   \mbf{c}_{\mathrm{lat}}
+%   =
+%   \begin{bmatrix}
+%     r\,c^2\alpha & cs\alpha & 0 & 0 \\
+%     cs\alpha & (\alpha s^2{+}2\beta)/r & 0 & 0 \\
+%     0 & 0 & c^2\alpha\kappa/\Delta & r\,cs\alpha\kappa/\Delta \\
+%     0 & 0 & r\,cs\alpha\kappa/\Delta & r^2 s^2\alpha\kappa/\Delta
+%   \end{bmatrix},
+% \ee
+% where $c = \cos\theta$, $s = \sin\theta$, $r = a/b$ is the cell
+% aspect ratio, and $\Delta = \alpha(c-rs)^2 + r\kappa$.
 
-\subsection{Parameter identification}
+% \subsection{Parameter identification}
 
-Matching~\eqref{eq:nassar_forward} to~\eqref{eq:Ceff} yields the
-design parameters that make the lattice reproduce the transformation
-cloaking tensor exactly.
-The global parameters (position-independent) are
-\be\label{eq:global_params}
-  \theta = \arctan\!\sqrt{\frac{\lambda}{2\mu+\lambda}}\,,
-  \quad
-  \alpha = 2(\mu+\lambda)\sqrt{\frac{\lambda}{2\mu+\lambda}}\,,
-  \quad
-  \beta = \frac{(2\mu+\lambda)^2 - \lambda^2}
-               {2\sqrt{\lambda}\,\sqrt{2\mu+\lambda}}\,,
-\ee
-and the position-dependent parameters (through $f$) are
-\be\label{eq:local_params}
-  \frac{a}{b} = f\,\sqrt{\frac{2\mu+\lambda}{\lambda}}\,,
-  \qquad
-  \kappa = \frac{\lambda\mu}{\lambda - \mu}
-           \,\frac{(1-f)^2}{f}\,.
-\ee
-Stability requires $\mu \leq \lambda$ so that $\kappa > 0$.
-In the special case $\lambda = \mu$, we obtain $\kappa\to\infty$
-(the lattice enforces minor symmetry) and $\theta = \pi/6$.
+% Matching~\eqref{eq:nassar_forward} to~\eqref{eq:Ceff} yields the
+% design parameters that make the lattice reproduce the transformation
+% cloaking tensor exactly.
+% The global parameters (position-independent) are
+% \be\label{eq:global_params}
+%   \theta = \arctan\!\sqrt{\frac{\lambda}{2\mu+\lambda}}\,,
+%   \quad
+%   \alpha = 2(\mu+\lambda)\sqrt{\frac{\lambda}{2\mu+\lambda}}\,,
+%   \quad
+%   \beta = \frac{(2\mu+\lambda)^2 - \lambda^2}
+%                {2\sqrt{\lambda}\,\sqrt{2\mu+\lambda}}\,,
+% \ee
+% and the position-dependent parameters (through $f$) are
+% \be\label{eq:local_params}
+%   \frac{a}{b} = f\,\sqrt{\frac{2\mu+\lambda}{\lambda}}\,,
+%   \qquad
+%   \kappa = \frac{\lambda\mu}{\lambda - \mu}
+%            \,\frac{(1-f)^2}{f}\,.
+% \ee
+% Stability requires $\mu \leq \lambda$ so that $\kappa > 0$.
+% In the special case $\lambda = \mu$, we obtain $\kappa\to\infty$
+% (the lattice enforces minor symmetry) and $\theta = \pi/6$.
 
-\begin{figure}[H]
-  \centering
-  \includegraphics[width=\linewidth]{../figures/nassar_polar_lattice_resolutions.pdf}
-  \caption{Nassar degenerate polar lattice at three resolutions.
-  Each cell contains a rigid mass (orange), two diagonal springs~$\alpha$ (blue),
-  and one vertical spring~$\beta$ (red).
-  The innermost ring of cells cannot reach $r = r_i$ exactly;
-  cloaking becomes ideal only in the limit $M, N \to \infty$.}
-  \label{fig:polar_lattice}
-\end{figure}
+% \begin{figure}[H]
+%   \centering
+%   \includegraphics[width=\linewidth]{../figures/nassar_polar_lattice_resolutions.pdf}
+%   \caption{Nassar degenerate polar lattice at three resolutions.
+%   Each cell contains a rigid mass (orange), two diagonal springs~$\alpha$ (blue),
+%   and one vertical spring~$\beta$ (red).
+%   The innermost ring of cells cannot reach $r = r_i$ exactly;
+%   cloaking becomes ideal only in the limit $M, N \to \infty$.}
+%   \label{fig:polar_lattice}
+% \end{figure}
 
 \subsection{Homogenized cell model}
 
@@ -151,30 +151,27 @@ Instead of modelling the discrete lattice, we discretise the cloak
 annulus into a regular Cartesian grid of $n_x \times n_y$ square cells
 (Fig.~\ref{fig:cartesian_cells}).
 Each cell whose centre lies in $\{r_i < r < r_c\}$ is assigned a
-piecewise-constant effective stiffness $\mbf{c}_{\mathrm{lat}}$
-computed from~\eqref{eq:nassar_forward} with parameters
-from~\eqref{eq:global_params}--\eqref{eq:local_params} evaluated at
-the cell centre.
+piecewise-constant effective stiffness $\mbf{c}_{\mathrm{lat}}$.
 The density is set to~\eqref{eq:rhoeff}.
 Cells outside the annulus retain the background material;
 cells inside the void are removed from the mesh.
 
-Since the Nassar parameters are expressed in the local polar frame
-$(\mbf{m}, \mbf{n})$, the stiffness tensor must be rotated to the
-global Cartesian frame $(x, y)$ by the standard fourth-order rotation:
-\be
-  c_{ijkl}^{\mathrm{cart}}
-  = R_{ia}\,R_{jb}\,R_{kc}\,R_{ld}\;
-    c_{abcd}^{\mathrm{polar}}\,,
-  \qquad
-  \mbf{R}(\varphi)
-  = \begin{bmatrix}
-      \cos\varphi & -\sin\varphi \\
-      \sin\varphi & \phantom{-}\cos\varphi
-    \end{bmatrix},
-\ee
-where $\varphi = \mathrm{atan2}(y, x)$ is the polar angle of the cell
-centre.
+% Since the Nassar parameters are expressed in the local polar frame
+% $(\mbf{m}, \mbf{n})$, the stiffness tensor must be rotated to the
+% global Cartesian frame $(x, y)$ by the standard fourth-order rotation:
+% \be
+%   c_{ijkl}^{\mathrm{cart}}
+%   = R_{ia}\,R_{jb}\,R_{kc}\,R_{ld}\;
+%     c_{abcd}^{\mathrm{polar}}\,,
+%   \qquad
+%   \mbf{R}(\varphi)
+%   = \begin{bmatrix}
+%       \cos\varphi & -\sin\varphi \\
+%       \sin\varphi & \phantom{-}\cos\varphi
+%     \end{bmatrix},
+% \ee
+% where $\varphi = \mathrm{atan2}(y, x)$ is the polar angle of the cell
+% centre.
 
 \begin{figure}[H]
   \centering
@@ -419,20 +416,254 @@ distortion from $5.18\%$ to an asymptotic ${\sim}\,0.75\%$, substantially below
 the $4\%$ achieved by Wang et al., though the comparison is not
 strictly apples-to-apples given the different physics.
 
-% \subsection{Differentiability}
+%% ==================================================================
+\section{Gradient-based optimisation of cell parameters}
+\label{sec:optimisation}
+%% ==================================================================
 
-% The entire pipeline --- from Nassar cell parameters
-% $(\theta, \alpha, \beta, 1/\kappa, a/b)$ through tensor rotation,
-% cell-to-quadrature-point expansion, FEM assembly and solve, to the
-% cloaking loss~\eqref{eq:distortion} --- is implemented in JAX and is
-% end-to-end differentiable via automatic differentiation.
-% The use of $1/\kappa$ (rather than~$\kappa$ itself) as the
-% optimisable parameter eliminates the $\kappa\to\infty$ singularity:
-% the minor-symmetric limit corresponds simply to $1/\kappa = 0$.
+The entire pipeline --- from cell material parameters through FEM
+assembly and solve to the cloaking loss --- is implemented in JAX
+and is end-to-end differentiable via implicit adjoint differentiation
+through the linear FEM solve.
+This enables gradient-based optimisation of the per-cell stiffness
+and density to minimise the cloaking distortion directly.
 
-% This enables gradient-based optimisation of the cell parameters and,
-% in future work, parameterisation of all cell quantities by a neural
-% network trained with active learning on the cloaking loss.
+We consider two parameterisation strategies for the material field
+over the $80\times80$ cell grid: (i)~direct optimisation of raw
+per-cell parameters, and (ii)~neural reparameterisation via a
+coordinate-conditioned MLP.
+
+\subsection{Loss function}
+
+The optimisation minimises a composite objective
+\be\label{eq:opt_loss}
+  \mcl{L}(\mbf{p})
+  = \mcl{L}_{\mathrm{cloak}}(\mbf{p})
+    + \lambda_{\ell_2}\,\mcl{L}_{\ell_2}(\mbf{p})
+    + \lambda_{\mathrm{nb}}\,\mcl{L}_{\mathrm{nb}}(\mbf{p})\,,
+\ee
+where $\mbf{p} = \{(\mbf{C}^{(k)}_{\mathrm{flat}}, \rho^{(k)})\}_{k=1}^{N_{\mathrm{cells}}}$
+collects all per-cell material parameters ($N_{\mathrm{cells}} = 4\,468$ active
+cloak cells in the $80\times80$ grid, each with 10 stiffness + 1 density
+parameters $\Rightarrow$ ${\sim}\,49\,000$ optimisable DOFs).
+
+The \textbf{cloaking term} measures relative $L^2$ displacement mismatch on
+the right physical boundary:
+\be
+  \mcl{L}_{\mathrm{cloak}}
+  = \frac{\|\mbf{u}_{\mathrm{cloak}} - \mbf{u}_{\mathrm{ref}}\|^2}
+         {\|\mbf{u}_{\mathrm{ref}}\|^2}\,,
+\ee
+where $\mbf{u}_{\mathrm{ref}}$ is the reference solution on the full
+(void-free) mesh and both solutions share the same mesh nodes on the
+measurement boundary (no interpolation needed).
+
+The \textbf{$\ell_2$ regularisation} penalises drift from the initial
+(transformation-theory) parameters:
+\be
+  \mcl{L}_{\ell_2}
+  = \frac{\|\mbf{C}_{\mathrm{flat}} - \mbf{C}_{\mathrm{flat}}^{(0)}\|^2}
+         {\|\mbf{C}_{\mathrm{flat}}^{(0)}\|^2}
+  + \frac{\|\boldsymbol{\rho} - \boldsymbol{\rho}^{(0)}\|^2}
+         {\|\boldsymbol{\rho}^{(0)}\|^2}\,,
+\ee
+where each component is normalised by its own initial norm so that
+stiffness and density contribute equally.
+
+The \textbf{neighbour smoothness} term penalises differences between
+4-connected adjacent cloak cells:
+\be
+  \mcl{L}_{\mathrm{nb}}
+  = \frac{1}{|\mcl{N}|}\sum_{(i,j)\in\mcl{N}}
+    \left(
+      \frac{\|\mbf{C}_i - \mbf{C}_j\|^2}{\langle\|\mbf{C}\|^2\rangle}
+    + \frac{(\rho_i - \rho_j)^2}{\langle\rho^2\rangle}
+    \right),
+\ee
+where $\mcl{N}$ is the set of neighbour pairs and the denominators are
+mean squared magnitudes for scale invariance.
+
+Gradients $\partial\mcl{L}/\partial\mbf{p}$ are computed via JAX-FEM's
+\texttt{ad\_wrapper}, which implements implicit adjoint differentiation
+through the sparse linear solve.
+
+\subsection{Approach 1: Direct per-cell optimisation}
+
+The most straightforward approach optimises the raw parameter arrays
+$\mbf{C}_{\mathrm{flat}}^{(k)} \in \mathbb{R}^{10}$ and
+$\rho^{(k)} \in \mathbb{R}$ for each cloak cell directly via
+Adam~\cite{kingma2015adam}.
+The transformational push-forward~\eqref{eq:Ceff}--\eqref{eq:rhoeff}
+evaluated at each cell centre provides the initialisation.
+
+This representation has two drawbacks:
+\begin{itemize}
+\item \textbf{Memory.}  The number of optimisable parameters scales
+  linearly with the number of cells (and cubically with spatial
+  resolution if the cell size is reduced to maintain accuracy).
+  This is acceptable for small scatterers but does not scale to
+  larger structures or 3D.
+\item \textbf{Smoothness.}  Raw per-cell parameters do not enforce
+  spatial continuity; the material field can develop
+  cell-to-cell oscillations that are unphysical and degrade
+  convergence.
+  This is mitigated by the neighbour regularisation
+  $\mcl{L}_{\mathrm{nb}}$ (with weight $\lambda_{\mathrm{nb}}$),
+  which acts as a discrete Laplacian penalty on the material field.
+\end{itemize}
+
+\noindent
+\textbf{Results.}
+Starting from the $80\times80$ Nassar cell initialisation
+(Table~\ref{tab:convergence}: $\mathcal{D}_{\mathrm{right}} = 45.88\%$),
+Adam optimisation with $\mathrm{lr} = 0.025$,
+$\lambda_{\ell_2} = 10^{-3}$, $\lambda_{\mathrm{nb}} = 10^{-3}$
+over 1\,000 iterations produces:
+
+\begin{table}[H]
+\centering
+\caption{Cloaking distortion: analytical initialisation vs.\ optimised
+$80\times80$ cells vs.\ continuous $\mbf{c}_{\mathrm{eff}}$.}
+\label{tab:opt_results}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+Configuration
+  & $\mathcal{D}_{\mathrm{right}}$ [\%]
+  & $\mathcal{D}_{\mathrm{boundary}}$ [\%]
+  & $\mathcal{D}_{\mathrm{outside}}$ [\%] \\
+\midrule
+Uncoated void           & 70.31 & --- & 5.18 \\
+Nassar $80\times80$ (init) & 45.88 & --- & --- \\
+Continuous $\mbf{c}_{\mathrm{eff}}$ & 27.51 & 1.33 & 1.57 \\
+\midrule
+Optimised $80\times80$ (direct) & \textbf{0.09} & \textbf{1.58} & \textbf{1.74} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The right-boundary distortion drops from $45.88\%$ to $0.09\%$
+--- essentially perfect cloaking on the shadow side --- which is
+substantially better than the continuous $\mbf{c}_{\mathrm{eff}}$ model
+($27.51\%$).
+The boundary and outside-cloak metrics ($1.58\%$ and $1.74\%$,
+respectively) are comparable to the continuous model at the same
+$160\times160$ FEM mesh resolution (Table~\ref{tab:ceff_convergence}).
+This indicates that the optimiser exploits the additional degrees of
+freedom (broken minor symmetry, non-analytical density profile) to
+compensate for both the piecewise-constant discretisation error and
+the intrinsic limitations of the radial blow-up transformation.
+
+\subsection{Approach 2: Neural reparameterisation}
+\label{sec:neural_reparam}
+
+Instead of optimising raw per-cell arrays, we reparameterise the material
+field through a small coordinate-conditioned MLP:
+\be
+  \Phi_\theta \colon (x, y) \;\mapsto\;
+  (\mbf{C}_{\mathrm{flat}},\, \rho)\,,
+\ee
+where $\theta$ denotes the network weights.
+The MLP is evaluated at each cell centre to produce the material
+parameters, which are then expanded to FEM quadrature points exactly
+as in the direct approach.
+Optimisation proceeds over $\theta$ rather than the cell arrays;
+gradients flow through the FEM adjoint and then through the network
+via standard backpropagation.
+
+This is conceptually analogous to the neural implicit representations
+used in computer graphics (NeRF~\cite{mildenhall2020nerf} and
+related work) but applied to physical material fields rather than
+radiance.
+The key advantages are:
+\begin{itemize}
+\item \textbf{Implicit smoothness.}  Neural networks are smooth
+  functions of their inputs by construction, so the material field
+  is spatially continuous without explicit neighbour regularisation
+  ($\lambda_{\mathrm{nb}} = 0$).
+\item \textbf{Compact representation.}  A 4-layer MLP with 256 hidden
+  units has ${\sim}\,200\text{k}$ weights, which parameterises the
+  ${\sim}\,49\text{k}$ cell values through a lower-dimensional manifold
+  that encodes spatial correlations.
+\item \textbf{Resolution-independent.}  The same network can be
+  evaluated at arbitrary cell centres, enabling coarse-to-fine
+  transfer without retraining.
+\end{itemize}
+
+Following Sitzmann et al.~\cite{sitzmann2020siren}, we use Fourier
+input features (sinusoidal positional encoding of the normalised cell
+coordinates) to allow the network to represent high-frequency spatial
+variations.
+SIREN-style periodic activations ($\sin$ instead of $\tanh$) are a
+natural alternative that may further improve the representation of
+sharp material transitions near the cloak boundaries; this is left
+for future experiments.
+
+\paragraph{Transformation prior.}
+Crucially, the network does \emph{not} learn the full material field
+from scratch.  Instead, it learns a \textbf{residual correction} to the
+analytical transformation-elasticity solution.
+The last network layer is initialised near zero
+($\mbf{W} \leftarrow 0.01\,\mbf{W}$, $\mbf{b} \leftarrow \mbf{0}$),
+so at step~0 the material field recovers the analytical initialisation
+exactly. Two scaling strategies for the residual are natural:
+
+\medskip\noindent
+\paragraph{Additive (absolute) residual.}
+\be\label{eq:neural_additive}
+  \mbf{C}_{\mathrm{flat}}(x,y)
+  = \mbf{C}_{\mathrm{flat}}^{(0)}(x,y)
+    + \epsilon\,\boldsymbol{\sigma}_C \odot \Phi_\theta^{(C)}(x,y)\,,
+\ee
+where $\boldsymbol{\sigma}_C$ is the per-component standard deviation
+of the initial field across cloak cells and $\epsilon$ is a global
+output scale.
+This is simple but problematic: the effective stiffness
+$\mbf{c}_{\mathrm{eff}}$ varies by orders of magnitude across the
+cloak (near-zero radial stiffness at $r \to r_i$, background-level
+at $r \to r_c$), so a single additive scale produces relative
+perturbations that are either too small where $C$ is large or too
+large where $C$ is small.
+
+\medskip\noindent
+\paragraph{Multiplicative (relative) residual.}
+\be\label{eq:neural_relative}
+  \mbf{C}_{\mathrm{flat}}(x,y)
+  = \mbf{C}_{\mathrm{flat}}^{(0)}(x,y)
+    \odot \bigl(1 + \epsilon\,\Phi_\theta^{(C)}(x,y)\bigr)\,,
+  \qquad
+  \rho(x,y)
+  = \rho^{(0)}(x,y)
+    \,\bigl(1 + \epsilon\,\Phi_\theta^{(\rho)}(x,y)\bigr)\,,
+\ee
+where $\epsilon$ is the output scale (default 0.1).
+Each cell's correction is proportional to its own initial value,
+so the relative perturbation is spatially uniform regardless of the
+local magnitude of $\mbf{c}_{\mathrm{eff}}$.
+This eliminates the need for per-component normalisation and produces
+well-conditioned gradients across the entire cloak.
+We use this form in practice.
+
+\noindent
+\paragraph{Preliminary results.}
+Neural reparameterisation has been implemented and produces
+valid gradients through the full pipeline.
+Systematic comparison with the direct approach (convergence speed,
+final loss, generalisation across frequencies) is ongoing.
+Additional regularisation strategies for material physical plausibility
+(e.g.\ positive-definite stiffness) are also being explored.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.75\linewidth]{../figures/convergence_comparison.pdf}
+  \caption{Convergence of right-boundary distortion $\mathcal{D}$ during
+  optimisation for the direct (Adam) and neural reparameterisation (INR)
+  approaches on the $80\times80$ grid.
+  Both methods drop below the continuous $\mbf{c}_{\mathrm{eff}}$ baseline
+  ($27.5\%$) within ${\sim}\,10$ steps and reach ${\sim}\,3\%$ by step~50.
+  Dashed/dotted lines mark the Nassar $80\times80$ initialisation and the
+  continuous transformation-elasticity limit.}
+  \label{fig:convergence_comparison}
+\end{figure}
 
 \printbibliography
 

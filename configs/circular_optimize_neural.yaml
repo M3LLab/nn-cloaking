@@ -62,5 +62,6 @@ optimization:
     n_layers: 4
     n_fourier: 32
     seed: 42
+    output_scale: 0.1
 
 output_dir: output/circular_optimize_neural
