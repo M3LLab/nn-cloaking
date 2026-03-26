@@ -38,10 +38,16 @@ class TriangularCloakConfig(BaseModel):
     c_factor: float = 0.1545   # half-width   = c_factor * H
 
 
+class CircularCloakConfig(BaseModel):
+    ri: float = 0.050          # inner (void) radius [m]
+    rc: float = 0.150          # outer (cloak boundary) radius [m]
+
+
 class AbsorbingConfig(BaseModel):
     L_pml_factor: float = 1.0  # L_pml = factor * lambda_star
     xi_max: float = 4.0
     pml_pow: int = 2
+    pml_all_sides: bool = False  # True for plane-wave (PML on all 4 sides)
 
 
 class MeshConfig(BaseModel):
@@ -54,8 +60,11 @@ class MeshConfig(BaseModel):
 
 
 class SourceConfig(BaseModel):
-    x_src_factor: float = 0.05   # x_src = factor * W
-    sigma_factor: float = 0.01   # sigma = factor * lambda_star
+    source_type: str = "gaussian"  # "gaussian" (surface) or "plane_wave" (left boundary)
+    wave_type: str = "P"           # "P" or "S" (for plane_wave source)
+    frequency_hz: float = 0.0     # Hz; if >0, overrides f_star-based omega
+    x_src_factor: float = 0.05    # x_src = factor * W
+    sigma_factor: float = 0.01    # sigma = factor * lambda_star
     F0: float = 1.0
 
 
@@ -72,13 +81,39 @@ class CellConfig(BaseModel):
     n_C_params: Literal[4, 6, 10, 16] = 6   # 6=block-diag Cosserat (recommended), 16=full voigt4
 
 
+class LossConfig(BaseModel):
+    """Settings for cloaking loss computation."""
+    tol: float = 1e-3   # spatial tolerance for boundary/region node selection
+
+
+class NeuralReparamConfig(BaseModel):
+    """Settings for neural reparameterization of material fields."""
+    hidden_size: int = 256
+    n_layers: int = 4
+    n_fourier: int = 32
+    seed: int = 42
+
+
 class OptimizationConfig(BaseModel):
     """Settings for cell-based material optimization."""
+    method: Literal["raw", "neural"] = "raw"  # "raw" = direct params, "neural" = MLP reparam
     n_iters: int = 100
     lr: float = 1e-3
     lambda_l2: float = 1e-4       # L2 regularization (drift from init)
     lambda_neighbor: float = 1e-3  # neighbor smoothness regularization
     plot_every: int = 1            # plot |Re(u)| every N steps (0 = disabled)
+    init_params: str = ""          # path to .npz with cell_C_flat/cell_rho for warm-start
+    neural: NeuralReparamConfig = NeuralReparamConfig()
+
+
+class NassarConfig(BaseModel):
+    """Nassar cell parameterization settings."""
+    enabled: bool = False
+    cell_n_x: int = 20       # cells in x direction (Cartesian grid over annulus bbox)
+    cell_n_y: int = 20       # cells in y direction
+    polar: bool = False       # use polar cell decomposition (N sectors × M layers)
+    lattice_N: int = 75       # angular sectors (paper default)
+    lattice_M: int = 22       # radial layers (paper default)
 
 
 class SimulationConfig(BaseModel):
@@ -88,12 +123,15 @@ class SimulationConfig(BaseModel):
     material: MaterialConfig = MaterialConfig()
     domain: DomainConfig = DomainConfig()
     geometry: TriangularCloakConfig = TriangularCloakConfig()
+    circular_geometry: CircularCloakConfig = CircularCloakConfig()
     absorbing: AbsorbingConfig = AbsorbingConfig()
     mesh: MeshConfig = MeshConfig()
     source: SourceConfig = SourceConfig()
     solver: SolverConfig = SolverConfig()
     cells: CellConfig = CellConfig()
+    nassar: NassarConfig = NassarConfig()
     optimization: OptimizationConfig = OptimizationConfig()
+    loss: LossConfig = LossConfig()
     output_dir: str = "output"
 
 
@@ -147,7 +185,7 @@ class DerivedParams:
     y_top: float
     x_c: float  # cloak centre x
 
-    # cloak geometry
+    # cloak geometry (triangular)
     a: float
     b: float
     c: float
@@ -161,6 +199,12 @@ class DerivedParams:
     # mesh
     nx_total: int
     ny_total: int
+
+    # cloak geometry (circular) — None when geometry_type != "circular"
+    ri: float | None = None
+    rc: float | None = None
+    y_c: float | None = None       # centre y (x_c already exists)
+    pml_all_sides: bool = False
 
     @staticmethod
     def from_config(cfg: SimulationConfig) -> DerivedParams:
@@ -180,10 +224,30 @@ class DerivedParams:
         cR = cs * (0.826 + 1.14 * nu) / (1 + nu)
 
         lambda_star = dom.lambda_star
-        omega = 2 * np.pi * dom.f_star * cR / lambda_star
 
-        H = dom.H_factor * lambda_star
-        W = dom.W_factor * lambda_star
+        # Frequency: use explicit frequency_hz if set, otherwise f_star
+        if src.frequency_hz > 0:
+            omega = 2 * np.pi * src.frequency_hz
+        else:
+            omega = 2 * np.pi * dom.f_star * cR / lambda_star
+
+        # Circular geometry: domain sized around the void
+        ri_val = rc_val = y_c_val = None
+        pml_all = ab.pml_all_sides
+        if cfg.geometry_type == "circular":
+            circ = cfg.circular_geometry
+            ri_val = circ.ri
+            rc_val = circ.rc
+            # Domain = 4*rc × 4*rc (large enough for far-field measurement)
+            H = 4.0 * rc_val
+            W = 4.0 * rc_val
+            # Override lambda_star from wavelength at given frequency
+            if src.frequency_hz > 0:
+                lambda_star = cs / src.frequency_hz
+            pml_all = True  # circular geometry always uses all-side PML
+        else:
+            H = dom.H_factor * lambda_star
+            W = dom.W_factor * lambda_star
 
         a = geo.a_factor * H
         b = geo.b_factor * a
@@ -191,11 +255,17 @@ class DerivedParams:
 
         L_pml = ab.L_pml_factor * lambda_star
         W_total = 2 * L_pml + W
-        H_total = L_pml + H
         x_off = L_pml
         y_off = L_pml
-        y_top = H_total
         x_c = x_off + W / 2.0
+
+        if cfg.geometry_type == "circular":
+            H_total = 2 * L_pml + H  # PML on both top and bottom
+            y_c_val = y_off + H / 2.0
+        else:
+            H_total = L_pml + H  # PML only on bottom
+
+        y_top = H_total
 
         x_src_phys = src.x_src_factor * W
         x_src = x_off + x_src_phys
@@ -203,6 +273,8 @@ class DerivedParams:
 
         nx_total = msh.n_pml_x + msh.nx_phys + msh.n_pml_x
         ny_total = msh.n_pml_y + msh.ny_phys
+        if cfg.geometry_type == "circular":
+            ny_total = msh.n_pml_y + msh.ny_phys + msh.n_pml_y
 
         return DerivedParams(
             rho0=rho0, mu=mu, lam=lam, nu=nu, cs=cs, cp=cp, cR=cR,
@@ -212,6 +284,7 @@ class DerivedParams:
             W_total=W_total, H_total=H_total, x_off=x_off, y_off=y_off,
             y_top=y_top, x_c=x_c,
             a=a, b=b, c=c,
+            ri=ri_val, rc=rc_val, y_c=y_c_val, pml_all_sides=pml_all,
             x_src=x_src, x_src_phys=x_src_phys,
             sigma_src=sigma_src, F0=src.F0,
             nx_total=nx_total, ny_total=ny_total,

@@ -20,8 +20,16 @@ from rayleigh_cloak.materials import C_iso, CellMaterial
 from rayleigh_cloak.mesh import extract_submesh, generate_mesh, generate_mesh_full
 from rayleigh_cloak.optimize import (
     OptimizationResult,
+    cloaking_distortion_percent,
+    get_all_physical_boundary_indices,
+    get_outside_cloak_indices,
     get_right_boundary_indices,
     run_optimization,
+)
+from rayleigh_cloak.neural_reparam import (
+    NeuralOptimizationResult,
+    make_neural_reparam,
+    run_optimization_neural,
 )
 from rayleigh_cloak.problem import build_problem
 
@@ -34,12 +42,20 @@ class SolutionResult:
     mesh: Mesh
     config: SimulationConfig
     params: DerivedParams
+    full_mesh: Mesh | None = None       # full mesh before defect extraction
+    kept_nodes: np.ndarray | None = None  # mapping submesh→full mesh nodes
 
 
 def _create_geometry(cfg: SimulationConfig, params: DerivedParams):
     """Instantiate the geometry object specified by ``cfg.geometry_type``."""
     if cfg.geometry_type == "triangular":
         return TriangularCloakGeometry.from_params(params)
+    if cfg.geometry_type == "circular":
+        from rayleigh_cloak.geometry.circular import CircularCloakGeometry
+        return CircularCloakGeometry(
+            ri=params.ri, rc=params.rc,
+            x_c=params.x_c, y_c=params.y_c,
+        )
     raise ValueError(f"Unknown geometry_type: {cfg.geometry_type!r}")
 
 
@@ -96,7 +112,51 @@ def solve_reference(
     return solve(ref_config, mesh=mesh)
 
 
-def solve_optimization(config: SimulationConfig) -> OptimizationResult:
+def solve_cell_based(config: SimulationConfig) -> SolutionResult:
+    """Forward solve with piecewise-constant cell materials (no optimisation).
+
+    Uses the initial cell parameters derived from the continuous
+    transformational push-forward, evaluated at cell centres.
+    """
+    params = DerivedParams.from_config(config)
+    geometry = _create_geometry(config, params)
+
+    print("=== Generating shared mesh ===")
+    full_mesh = generate_mesh_full(config, params, geometry)
+
+    print("=== Extracting submesh (removing defect) ===")
+    cloak_mesh, kept_nodes = extract_submesh(full_mesh, geometry)
+    print(f"  Submesh: {len(cloak_mesh.points)} nodes, "
+          f"{len(cloak_mesh.cells)} elements")
+
+    print("=== Setting up cell decomposition ===")
+    cell_decomp = CellDecomposition(geometry, config.cells.n_x, config.cells.n_y)
+    C0 = C_iso(params.lam, params.mu)
+    cell_mat = CellMaterial(
+        geometry, C0, params.rho0, cell_decomp,
+        n_C_params=config.cells.n_C_params,
+    )
+    print(f"  {cell_decomp.n_cells} total cells, "
+          f"{cell_decomp.n_cloak_cells} in cloak")
+
+    problem = build_problem(cloak_mesh, config, params, geometry, cell_decomp)
+    problem.set_params(cell_mat.get_initial_params())
+
+    solver_opts = {
+        "petsc_solver": {
+            "ksp_type": config.solver.ksp_type,
+            "pc_type": config.solver.pc_type,
+        }
+    }
+    print("Solving cell-based system ...")
+    sol_list = jax_fem_solver(problem, solver_options=solver_opts)
+    u = np.asarray(sol_list[0])
+
+    return SolutionResult(u=u, mesh=cloak_mesh, config=config, params=params,
+                          full_mesh=full_mesh, kept_nodes=kept_nodes)
+
+
+def solve_optimization(config: SimulationConfig, step_callback=None) -> OptimizationResult:
     """Run cell-based material optimisation.
 
     Steps:
@@ -158,10 +218,21 @@ def solve_optimization(config: SimulationConfig) -> OptimizationResult:
         }
     }
     adjoint_opts = {
-        "petsc_solver": {"ksp_type": "gmres", "pc_type": "ilu"}
+        "petsc_solver": {
+            "ksp_type": config.solver.ksp_type,
+            "pc_type": config.solver.pc_type,
+        }
     }
     fwd_pred = ad_wrapper(problem, solver_opts, adjoint_opts)
-    params_init = cell_mat.get_initial_params()
+
+    # Load initial params: from file (warm-start) or from continuous push-forward
+    if config.optimization.init_params:
+        import jax.numpy as jnp
+        data = np.load(config.optimization.init_params)
+        params_init = (jnp.array(data["cell_C_flat"]), jnp.array(data["cell_rho"]))
+        print(f"  Loaded init params from {config.optimization.init_params}")
+    else:
+        params_init = cell_mat.get_initial_params()
 
     # Per-step displacement plot callback
     pts_x = np.asarray(cloak_mesh.points[:, 0])
@@ -189,5 +260,435 @@ def solve_optimization(config: SimulationConfig) -> OptimizationResult:
         lambda_neighbor=opt_cfg.lambda_neighbor,
         plot_callback=_plot_step if opt_cfg.plot_every > 0 else None,
         plot_every=opt_cfg.plot_every,
+        step_callback=step_callback,
     )
     return result
+
+
+def solve_optimization_neural(
+    config: SimulationConfig, step_callback=None,
+) -> NeuralOptimizationResult:
+    """Run cell-based optimisation with neural reparameterization.
+
+    Same setup as ``solve_optimization`` (shared mesh, reference solve,
+    submesh extraction, cell decomposition), but optimises MLP weights
+    instead of raw cell parameters.
+    """
+    params = DerivedParams.from_config(config)
+    geometry = _create_geometry(config, params)
+
+    print("=== Step 1: Generating shared mesh ===")
+    full_mesh = generate_mesh_full(config, params, geometry)
+    print(f"  Full mesh: {len(full_mesh.points)} nodes, "
+          f"{len(full_mesh.cells)} elements")
+
+    print("=== Step 2: Solving reference problem (on full mesh) ===")
+    ref_result = solve_reference(config, mesh=full_mesh)
+
+    print("=== Step 3: Extracting submesh (removing defect elements) ===")
+    cloak_mesh, kept_nodes = extract_submesh(full_mesh, geometry)
+    print(f"  Submesh: {len(cloak_mesh.points)} nodes, "
+          f"{len(cloak_mesh.cells)} elements")
+
+    print("=== Step 4: Setting up cell decomposition ===")
+    cell_decomp = CellDecomposition(geometry, config.cells.n_x, config.cells.n_y)
+    C0 = C_iso(params.lam, params.mu)
+    cell_mat = CellMaterial(
+        geometry, C0, params.rho0, cell_decomp,
+        n_C_params=config.cells.n_C_params,
+    )
+    print(f"  {cell_decomp.n_cells} total cells, "
+          f"{cell_decomp.n_cloak_cells} in cloak")
+
+    problem = build_problem(cloak_mesh, config, params, geometry, cell_decomp)
+
+    x_right = params.x_off + params.W
+    boundary_indices = get_right_boundary_indices(
+        np.asarray(cloak_mesh.points), x_right)
+    print(f"  {len(boundary_indices)} boundary nodes for loss")
+
+    u_ref_boundary = ref_result.u[kept_nodes[boundary_indices]]
+
+    print("=== Step 5: Setting up neural reparameterization ===")
+    params_init = cell_mat.get_initial_params()
+    neural_cfg = config.optimization.neural
+    theta_init, reparam = make_neural_reparam(
+        cell_decomp, params_init,
+        hidden_size=neural_cfg.hidden_size,
+        n_layers=neural_cfg.n_layers,
+        n_fourier=neural_cfg.n_fourier,
+        seed=neural_cfg.seed,
+    )
+    n_weights = sum(p["W"].size + p["b"].size for p in theta_init)
+    print(f"  MLP: {neural_cfg.n_layers} layers, "
+          f"{neural_cfg.hidden_size} hidden, "
+          f"{n_weights} total weights")
+
+    solver_opts = {
+        "petsc_solver": {
+            "ksp_type": config.solver.ksp_type,
+            "pc_type": config.solver.pc_type,
+        }
+    }
+    adjoint_opts = {
+        "petsc_solver": {
+            "ksp_type": config.solver.ksp_type,
+            "pc_type": config.solver.pc_type,
+        }
+    }
+    fwd_pred = ad_wrapper(problem, solver_opts, adjoint_opts)
+
+    pts_x = np.asarray(cloak_mesh.points[:, 0])
+    pts_y = np.asarray(cloak_mesh.points[:, 1])
+    step_dir = f"{config.output_dir}/opt_steps"
+
+    def _plot_step(step: int, u: np.ndarray) -> None:
+        from rayleigh_cloak.plot import plot_displacement_field
+        plot_displacement_field(
+            u, pts_x, pts_y, params,
+            save_path=f"{step_dir}/step_{step:04d}.png",
+            title=f"|Re(u)| — step {step}",
+        )
+
+    print("=== Step 6: Optimising (neural reparam) ===")
+    opt_cfg = config.optimization
+    result = run_optimization_neural(
+        fwd_pred=fwd_pred,
+        params_init=params_init,
+        u_ref_boundary=u_ref_boundary,
+        boundary_indices=boundary_indices,
+        reparam=reparam,
+        theta_init=theta_init,
+        n_iters=opt_cfg.n_iters,
+        lr=opt_cfg.lr,
+        lambda_l2=opt_cfg.lambda_l2,
+        plot_callback=_plot_step if opt_cfg.plot_every > 0 else None,
+        plot_every=opt_cfg.plot_every,
+        step_callback=step_callback,
+    )
+    return result
+
+
+# ── Nassar cloaking pipeline ──────────────────────────────────────────
+
+
+@dataclass
+class NassarResult:
+    """Result of a Nassar cloaking simulation."""
+    u_ref: np.ndarray           # reference solution (no void)
+    u_cloak: np.ndarray         # cloaked solution
+    mesh_ref: Mesh              # full mesh (shared)
+    mesh_cloak: Mesh            # submesh (void removed)
+    kept_nodes: np.ndarray      # mapping from submesh to full mesh nodes
+    distortion: float           # % cloaking distortion
+    config: SimulationConfig
+    params: DerivedParams
+
+
+def _plot_nassar_fields(
+    u_ref: np.ndarray,
+    mesh_ref: Mesh,
+    u_cloak: np.ndarray,
+    mesh_cloak: Mesh,
+    params: DerivedParams,
+    geometry,
+    output_dir: str,
+) -> None:
+    """Plot Re(ux) displacement fields for reference and cloaked solutions."""
+    import os
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import matplotlib.tri as mtri
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    x_off, y_off = params.x_off, params.y_off
+    W, H = params.W, params.H
+    ri, rc = params.ri, params.rc
+    x_c, y_c = geometry.x_c, geometry.y_c
+
+    def _phys_mask(cells, pts):
+        """Return boolean mask for cells whose centroid is in the physical domain."""
+        centroids = pts[cells].mean(axis=1)
+        return (
+            (centroids[:, 0] >= x_off - 1e-8) &
+            (centroids[:, 0] <= x_off + W + 1e-8) &
+            (centroids[:, 1] >= y_off - 1e-8) &
+            (centroids[:, 1] <= y_off + H + 1e-8)
+        )
+
+    def _add_cloak_circles(ax):
+        theta = np.linspace(0, 2 * np.pi, 200)
+        ax.plot((x_c - x_off) + ri * np.cos(theta),
+                (y_c - y_off) + ri * np.sin(theta),
+                '--', color='black', lw=1.0, label=f'r_i={ri*1e3:.0f}mm')
+        ax.plot((x_c - x_off) + rc * np.cos(theta),
+                (y_c - y_off) + rc * np.sin(theta),
+                '--', color='black', lw=1.0, label=f'r_c={rc*1e3:.0f}mm')
+
+    def _plot_field(u, mesh, title, fname, component=0):
+        """Plot one displacement component on the physical domain."""
+        pts = np.asarray(mesh.points)
+        cells = np.asarray(mesh.cells)
+        field = u[:, component]
+
+        phys = _phys_mask(cells, pts)
+        cells_phys = cells[phys]
+        tri = mtri.Triangulation(pts[:, 0] - x_off, pts[:, 1] - y_off, cells_phys)
+
+        vlim = np.percentile(np.abs(field), 97)
+        if vlim < 1e-30:
+            vlim = 1.0
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+        tc = ax.tricontourf(tri, field, levels=100, cmap='RdBu_r',
+                            vmin=-vlim, vmax=vlim)
+        fig.colorbar(tc, ax=ax, shrink=0.7, label=title)
+        _add_cloak_circles(ax)
+
+        ax.set_title(title)
+        ax.set_xlabel('x [m]')
+        ax.set_ylabel('y [m]')
+        ax.set_aspect('equal')
+        ax.legend(loc='upper right', fontsize=7)
+
+        path = os.path.join(output_dir, fname)
+        fig.savefig(path, dpi=200, bbox_inches='tight')
+        plt.close(fig)
+        print(f"  Saved {path}")
+
+    def _compute_grad_fields(u, mesh):
+        """Compute per-element div and curl of Re(u) on TRI3 elements.
+
+        For TRI3, gradients are constant per element:
+            div(u) = du_x/dx + du_y/dy     (P-wave / compressional)
+            curl(u) = du_y/dx - du_x/dy    (S-wave / rotational, scalar in 2D)
+
+        Returns (div, curl, centroids) arrays of shape (n_elements,).
+        """
+        pts = np.asarray(mesh.points)
+        cells = np.asarray(mesh.cells)
+        re_ux = u[:, 0]
+        re_uy = u[:, 1]
+
+        # Vertices per element: (n_elem, 3, 2)
+        v = pts[cells]
+        x1, y1 = v[:, 0, 0], v[:, 0, 1]
+        x2, y2 = v[:, 1, 0], v[:, 1, 1]
+        x3, y3 = v[:, 2, 0], v[:, 2, 1]
+
+        # 2 * area (signed)
+        det = (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1)
+        det = np.where(np.abs(det) < 1e-30, 1e-30, det)
+
+        # Shape function gradients (constant per element):
+        # dN1/dx = (y2-y3)/det,  dN2/dx = (y3-y1)/det,  dN3/dx = (y1-y2)/det
+        # dN1/dy = (x3-x2)/det,  dN2/dy = (x1-x3)/det,  dN3/dy = (x2-x1)/det
+        dNdx = np.column_stack([(y2-y3)/det, (y3-y1)/det, (y1-y2)/det])
+        dNdy = np.column_stack([(x3-x2)/det, (x1-x3)/det, (x2-x1)/det])
+
+        # Nodal values per element: (n_elem, 3)
+        ux_e = re_ux[cells]
+        uy_e = re_uy[cells]
+
+        # Gradients: du/dx = sum_a N_a,x * u_a
+        dux_dx = np.sum(dNdx * ux_e, axis=1)
+        duy_dy = np.sum(dNdy * uy_e, axis=1)
+        duy_dx = np.sum(dNdx * uy_e, axis=1)
+        dux_dy = np.sum(dNdy * ux_e, axis=1)
+
+        div = dux_dx + duy_dy
+        curl = duy_dx - dux_dy
+        centroids = v.mean(axis=1)
+
+        return div, curl, centroids
+
+    def _plot_cell_field(values, mesh, phys, title, fname, cmap='RdBu_r'):
+        """Plot a per-element scalar field using tripcolor."""
+        pts = np.asarray(mesh.points)
+        cells = np.asarray(mesh.cells)
+        cells_phys = cells[phys]
+        vals_phys = values[phys]
+
+        tri = mtri.Triangulation(pts[:, 0] - x_off, pts[:, 1] - y_off, cells_phys)
+
+        vlim = np.percentile(np.abs(vals_phys), 97)
+        if vlim < 1e-30:
+            vlim = 1.0
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+        tp = ax.tripcolor(tri, facecolors=vals_phys, cmap=cmap,
+                          vmin=-vlim, vmax=vlim, edgecolors='none')
+        fig.colorbar(tp, ax=ax, shrink=0.7, label=title)
+        _add_cloak_circles(ax)
+
+        ax.set_title(title)
+        ax.set_xlabel('x [m]')
+        ax.set_ylabel('y [m]')
+        ax.set_aspect('equal')
+        ax.legend(loc='upper right', fontsize=7)
+
+        path = os.path.join(output_dir, fname)
+        fig.savefig(path, dpi=200, bbox_inches='tight')
+        plt.close(fig)
+        print(f"  Saved {path}")
+
+    # ── Displacement components ──
+    # Reference: Re(ux) on full mesh
+    _plot_field(u_ref, mesh_ref, 'Re(u_x) — reference (no void)',
+                'nassar_ref_re_ux.png', component=0)
+
+    # Cloak: Re(ux) on submesh
+    _plot_field(u_cloak, mesh_cloak, 'Re(u_x) — cloaked',
+                'nassar_cloak_re_ux.png', component=0)
+
+    # Reference: Re(uy) on full mesh
+    _plot_field(u_ref, mesh_ref, 'Re(u_y) — reference (no void)',
+                'nassar_ref_re_uy.png', component=1)
+
+    # Cloak: Re(uy) on submesh
+    _plot_field(u_cloak, mesh_cloak, 'Re(u_y) — cloaked',
+                'nassar_cloak_re_uy.png', component=1)
+
+    # ── Divergence and curl ──
+    pts_ref = np.asarray(mesh_ref.points)
+    cells_ref = np.asarray(mesh_ref.cells)
+    phys_ref = _phys_mask(cells_ref, pts_ref)
+    div_ref, curl_ref, _ = _compute_grad_fields(u_ref, mesh_ref)
+    _plot_cell_field(div_ref, mesh_ref, phys_ref,
+                     'div Re(u) — reference (no void)', 'nassar_ref_div.png')
+    _plot_cell_field(curl_ref, mesh_ref, phys_ref,
+                     'curl Re(u) — reference (no void)', 'nassar_ref_curl.png')
+
+    pts_cl = np.asarray(mesh_cloak.points)
+    cells_cl = np.asarray(mesh_cloak.cells)
+    phys_cl = _phys_mask(cells_cl, pts_cl)
+    div_cl, curl_cl, _ = _compute_grad_fields(u_cloak, mesh_cloak)
+    _plot_cell_field(div_cl, mesh_cloak, phys_cl,
+                     'div Re(u) — cloaked', 'nassar_cloak_div.png')
+    _plot_cell_field(curl_cl, mesh_cloak, phys_cl,
+                     'curl Re(u) — cloaked', 'nassar_cloak_curl.png')
+
+
+def solve_nassar(config: SimulationConfig) -> NassarResult:
+    """Run the Nassar cloaking pipeline.
+
+    Steps:
+    1. Generate full mesh (no void cutout).
+    2. Solve reference (homogeneous background, no void).
+    3. Extract submesh (void elements removed).
+    4. Build cell decomposition + NassarCellMaterial.
+    5. Solve cloaked problem with Nassar cell materials.
+    6. Compute cloaking distortion (%).
+    """
+    import jax.numpy as jnp
+    from rayleigh_cloak.nassar import NassarCellMaterial
+    from rayleigh_cloak.problem import RayleighCloakProblem
+
+    params = DerivedParams.from_config(config)
+    geometry = _create_geometry(config, params)
+
+    print("=== Step 1: Generating shared mesh ===")
+    full_mesh = generate_mesh_full(config, params, geometry)
+    print(f"  Full mesh: {len(full_mesh.points)} nodes, "
+          f"{len(full_mesh.cells)} elements")
+
+    print("=== Step 2: Solving reference problem (homogeneous, no void) ===")
+    ref_result = solve_reference(config, mesh=full_mesh)
+    u_ref = ref_result.u
+
+    print("=== Step 3: Extracting submesh (removing void elements) ===")
+    cloak_mesh, kept_nodes = extract_submesh(full_mesh, geometry)
+    print(f"  Submesh: {len(cloak_mesh.points)} nodes, "
+          f"{len(cloak_mesh.cells)} elements")
+
+    print("=== Step 4: Setting up Nassar cell materials ===")
+    if config.nassar.polar:
+        from rayleigh_cloak.cells_polar import PolarCellDecomposition
+        from rayleigh_cloak.nassar import NassarPolarMaterial
+        cell_decomp = PolarCellDecomposition(
+            ri=params.ri, rc=params.rc,
+            x_c=geometry.x_c, y_c=geometry.y_c,
+            N=config.nassar.lattice_N, M=config.nassar.lattice_M,
+        )
+        nassar_mat = NassarPolarMaterial(
+            geometry, params.lam, params.mu, params.rho0, cell_decomp,
+        )
+        print(f"  Polar grid: {config.nassar.lattice_N} sectors × "
+              f"{config.nassar.lattice_M} layers = {cell_decomp.n_cells} cells")
+    else:
+        n_x = config.nassar.cell_n_x
+        n_y = config.nassar.cell_n_y
+        cell_decomp = CellDecomposition(geometry, n_x, n_y)
+        nassar_mat = NassarCellMaterial(
+            geometry, params.lam, params.mu, params.rho0, cell_decomp,
+        )
+        print(f"  {cell_decomp.n_cells} total cells, "
+              f"{cell_decomp.n_cloak_cells} in cloak")
+
+    # Attach Nassar material to the problem class
+    RayleighCloakProblem._nassar_cell_material = nassar_mat
+
+    cloak_config = config.model_copy(update={"is_reference": False})
+    problem = build_problem(cloak_mesh, cloak_config, params, geometry, cell_decomp)
+
+    # Set initial Nassar params
+    params_init = nassar_mat.get_initial_params()
+    problem.set_params(params_init)
+
+    print("=== Step 5: Solving cloaked problem ===")
+    solver_opts = {
+        "petsc_solver": {
+            "ksp_type": config.solver.ksp_type,
+            "pc_type": config.solver.pc_type,
+        }
+    }
+    sol_list = jax_fem_solver(problem, solver_options=solver_opts)
+    u_cloak = np.asarray(sol_list[0])
+
+    print("=== Step 6: Computing cloaking distortion ===")
+
+    # Circular measurement at r = 1.5*rc (primary metric)
+    from rayleigh_cloak.optimize import get_circular_boundary_indices
+    circ_indices = get_circular_boundary_indices(
+        np.asarray(cloak_mesh.points),
+        geometry.x_c, geometry.y_c, 1.5 * params.rc,
+    )
+    u_ref_circ = jnp.array(u_ref[kept_nodes[circ_indices]])
+    u_cloak_circ = jnp.array(u_cloak[circ_indices])
+    diff_circ = u_cloak_circ - u_ref_circ
+    ref_norm_sq_circ = jnp.sum(u_ref_circ ** 2) + 1e-30
+    distortion = float(100.0 * jnp.sqrt(jnp.sum(diff_circ ** 2) / ref_norm_sq_circ))
+    print(f"  {len(circ_indices)} nodes on circle r=1.5rc")
+    print(f"  Cloaking distortion (circle): {distortion:.2f}%")
+
+    # Also report all-boundary metric for comparison
+    boundary_indices = get_all_physical_boundary_indices(
+        np.asarray(cloak_mesh.points),
+        params.x_off, params.y_off, params.W, params.H,
+    )
+    u_ref_boundary = jnp.array(u_ref[kept_nodes[boundary_indices]])
+    u_cloak_boundary = jnp.array(u_cloak[boundary_indices])
+    diff_bnd = u_cloak_boundary - u_ref_boundary
+    ref_norm_sq_bnd = jnp.sum(u_ref_boundary ** 2) + 1e-30
+    dist_bnd = float(100.0 * jnp.sqrt(jnp.sum(diff_bnd ** 2) / ref_norm_sq_bnd))
+    print(f"  {len(boundary_indices)} nodes on all physical boundaries")
+    print(f"  Cloaking distortion (boundaries): {dist_bnd:.2f}%")
+
+    # ── Displacement field plots ──
+    print("=== Step 7: Plotting displacement fields ===")
+    _plot_nassar_fields(
+        u_ref, full_mesh, u_cloak, cloak_mesh,
+        params, geometry, config.output_dir,
+    )
+
+    # Clean up class attribute
+    RayleighCloakProblem._nassar_cell_material = None
+
+    return NassarResult(
+        u_ref=u_ref, u_cloak=u_cloak,
+        mesh_ref=full_mesh, mesh_cloak=cloak_mesh,
+        kept_nodes=kept_nodes, distortion=distortion,
+        config=config, params=params,
+    )

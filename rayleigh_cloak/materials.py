@@ -147,6 +147,54 @@ def flat6_to_C(flat: jnp.ndarray) -> jnp.ndarray:
     C = C.at[1, 0, 0, 1].set(flat[5])
     return C
 
+# ── 10-param (symmetric augmented Voigt, full Cosserat) ──────────────
+
+# Upper-triangle indices of the symmetric 4×4 augmented Voigt matrix.
+# Voigt index map: 0→(0,0), 1→(1,1), 2→(0,1), 3→(1,0)
+# 10 entries: (0,0),(0,1),(0,2),(0,3),(1,1),(1,2),(1,3),(2,2),(2,3),(3,3)
+_UT_IJ = [(0, 0), (0, 1), (0, 2), (0, 3),
+          (1, 1), (1, 2), (1, 3),
+          (2, 2), (2, 3),
+          (3, 3)]
+
+
+def C_to_flat10(C: jnp.ndarray) -> jnp.ndarray:
+    """Convert (2,2,2,2) tensor to 10-param flat array.
+
+    Stores the upper triangle of the symmetric 4×4 augmented Voigt matrix,
+    preserving all Cosserat components including normal-shear coupling::
+
+        flat[0]  = M[0,0] = C[0,0,0,0]
+        flat[1]  = M[0,1] = C[0,0,1,1]
+        flat[2]  = M[0,2] = C[0,0,0,1]
+        flat[3]  = M[0,3] = C[0,0,1,0]
+        flat[4]  = M[1,1] = C[1,1,1,1]
+        flat[5]  = M[1,2] = C[1,1,0,1]
+        flat[6]  = M[1,3] = C[1,1,1,0]
+        flat[7]  = M[2,2] = C[0,1,0,1]
+        flat[8]  = M[2,3] = C[0,1,1,0]
+        flat[9]  = M[3,3] = C[1,0,1,0]
+
+    This is the minimal lossless parameterisation for stiffness tensors with
+    major symmetry (C_ijkl = C_klij ↔ M = M^T).
+    """
+    M = C_to_voigt4(C)
+    return jnp.array([M[I, J] for I, J in _UT_IJ])
+
+
+def flat10_to_C(flat: jnp.ndarray) -> jnp.ndarray:
+    """Convert 10-param flat array to (2,2,2,2) tensor.
+
+    Reconstructs the full symmetric 4×4 augmented Voigt matrix from its
+    upper triangle, then converts to tensor form.
+    """
+    M = jnp.zeros((4, 4))
+    for k, (I, J) in enumerate(_UT_IJ):
+        M = M.at[I, J].set(flat[k])
+        M = M.at[J, I].set(flat[k])
+    return voigt4_to_C(M)
+
+
 # ── augmented Voigt (4×4) conversions ────────────────────────────────
 
 # Augmented Voigt index map: 0→(0,0), 1→(1,1), 2→(0,1), 3→(1,0)
@@ -232,9 +280,13 @@ def _get_converters(n_C_params: int):
 
     Supported values:
 
-    * **6** — block-diagonal Cosserat (recommended minimum).  Captures the
-      normal block and the full 2×2 shear block of the augmented Voigt matrix.
-    * **16** — full augmented 4×4 Voigt (most general).
+    * **10** — symmetric augmented Voigt (recommended).  Minimal lossless
+      parameterisation for tensors with major symmetry.  Preserves all
+      Cosserat components including normal-shear coupling.
+    * **6** — block-diagonal Cosserat.  Captures the normal block and the
+      full 2×2 shear block but drops normal-shear coupling.
+    * **16** — full augmented 4×4 Voigt (most general, redundant with
+      major symmetry).
     * **4** — minor-symmetric shear (deprecated, produces rank-3 Voigt →
       singular stiffness in the full-gradient FEM formulation).
     """
@@ -249,13 +301,15 @@ def _get_converters(n_C_params: int):
         return C_to_flatC, flatC_to_C
     if n_C_params == 6:
         return C_to_flat6, flat6_to_C
+    if n_C_params == 10:
+        return C_to_flat10, flat10_to_C
     if n_C_params == 16:
         def _to16(C):
             return C_to_voigt4(C).ravel()
         def _from16(flat):
             return voigt4_to_C(flat.reshape(4, 4))
         return _to16, _from16
-    raise ValueError(f"Unsupported n_C_params={n_C_params} (use 6 or 16)")
+    raise ValueError(f"Unsupported n_C_params={n_C_params} (use 10, 6, or 16)")
 
 
 # ── cell-based material model ────────────────────────────────────────
@@ -303,7 +357,6 @@ class CellMaterial:
             if mask[i]:
                 x = jnp.array(center)
                 C_i = C_eff(x, self.geometry, self.C0)
-                C_i = symmetrize_stiffness(C_i)  # enforce minor symmetry for stability
                 cell_C_list.append(self.to_flat(C_i))
                 cell_rho_list.append(float(rho_eff(x, self.geometry, self.rho0)))
             else:

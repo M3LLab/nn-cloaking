@@ -44,11 +44,15 @@ class CellDecomposition:
 
     def __post_init__(self) -> None:
         geo = self.geometry
-        # Bounding box of the cloak region (works for TriangularCloakGeometry)
-        self.x_min = geo.x_c - geo.c
-        self.x_max = geo.x_c + geo.c
-        self.y_min = geo.y_top - geo.b
-        self.y_max = geo.y_top
+        # Bounding box of the cloak region
+        if hasattr(geo, 'bbox'):
+            self.x_min, self.x_max, self.y_min, self.y_max = geo.bbox()
+        else:
+            # Triangular geometry fallback
+            self.x_min = geo.x_c - geo.c
+            self.x_max = geo.x_c + geo.c
+            self.y_min = geo.y_top - geo.b
+            self.y_max = geo.y_top
 
         self.cell_dx = (self.x_max - self.x_min) / self.n_x
         self.cell_dy = (self.y_max - self.y_min) / self.n_y

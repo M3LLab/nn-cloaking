@@ -101,6 +101,7 @@ def total_loss(
     return L_cloak + lambda_l2 * L_l2 + lambda_neighbor * L_nb
 
 
+
 # ── simple Adam optimiser ────────────────────────────────────────────
 
 
@@ -139,15 +140,100 @@ class OptimizationResult:
     """Result of a cell-based material optimisation run."""
     params: tuple[jnp.ndarray, jnp.ndarray]
     loss_history: list[float] = field(default_factory=list)
+    cloak_history: list[float] = field(default_factory=list)
+    l2_history: list[float] = field(default_factory=list)
+    neighbor_history: list[float] = field(default_factory=list)
 
 
 def get_right_boundary_indices(
     mesh_points: np.ndarray,
     x_right: float,
-    tol: float = 1e-1,
+    tol: float = 1e-3,
 ) -> np.ndarray:
     """Return node indices on the right physical boundary (excluding PML)."""
     return np.where(np.abs(mesh_points[:, 0] - x_right) < tol)[0]
+
+
+def get_circular_boundary_indices(
+    mesh_points: np.ndarray,
+    x_c: float,
+    y_c: float,
+    r_measure: float,
+    tol_frac: float = 0.05,
+) -> np.ndarray:
+    """Return node indices near a circle of radius *r_measure* around (x_c, y_c).
+
+    Selects nodes within ``tol_frac * r_measure`` of the measurement circle.
+    Useful for cloaking distortion metrics that are less sensitive to
+    shadow-side amplitude variations than a single planar boundary.
+    """
+    pts = np.asarray(mesh_points)
+    dx = pts[:, 0] - x_c
+    dy = pts[:, 1] - y_c
+    r = np.sqrt(dx**2 + dy**2)
+    tol = tol_frac * r_measure
+    return np.where(np.abs(r - r_measure) < tol)[0]
+
+
+def get_all_physical_boundary_indices(
+    mesh_points: np.ndarray,
+    x_off: float,
+    y_off: float,
+    W: float,
+    H: float,
+    tol: float = 1e-3,
+) -> np.ndarray:
+    """Return node indices on all four physical boundaries (excluding PML)."""
+    pts = np.asarray(mesh_points)
+    left = np.abs(pts[:, 0] - x_off) < tol
+    right = np.abs(pts[:, 0] - (x_off + W)) < tol
+    bottom = np.abs(pts[:, 1] - y_off) < tol
+    top = np.abs(pts[:, 1] - (y_off + H)) < tol
+    return np.where(left | right | bottom | top)[0]
+
+
+def get_outside_cloak_indices(
+    mesh_points: np.ndarray,
+    geometry,
+    x_off: float,
+    y_off: float,
+    W: float,
+    H: float,
+    tol: float = 1e-3,
+) -> np.ndarray:
+    """Return node indices in the physical domain but outside the cloak region.
+
+    Selects nodes that are (a) inside the physical domain (excluding PML) and
+    (b) not inside the cloak or defect region.  Useful for measuring cloaking
+    quality over the entire exterior field.
+    """
+    pts = np.asarray(mesh_points)
+    # Physical domain mask
+    in_phys = (
+        (pts[:, 0] >= x_off - tol) & (pts[:, 0] <= x_off + W + tol) &
+        (pts[:, 1] >= y_off - tol) & (pts[:, 1] <= y_off + H + tol)
+    )
+    # Vectorised cloak/defect membership using JAX vmap
+    import jax
+    import jax.numpy as jnp
+    pts_jnp = jnp.array(pts)
+    in_c = np.asarray(jax.vmap(geometry.in_cloak)(pts_jnp))
+    in_d = np.asarray(jax.vmap(geometry.in_defect)(pts_jnp))
+    return np.where(in_phys & ~in_c & ~in_d)[0]
+
+
+def cloaking_distortion_percent(
+    u_cloak: jnp.ndarray,
+    u_ref: jnp.ndarray,
+    boundary_indices: jnp.ndarray,
+) -> jnp.ndarray:
+    """Mean percent distortion on measurement boundaries.
+
+    Returns ``100 * ‖u_cloak − u_ref‖₂ / ‖u_ref‖₂`` on the given nodes.
+    """
+    diff = u_cloak[boundary_indices] - u_ref[boundary_indices]
+    ref_norm_sq = jnp.sum(u_ref[boundary_indices] ** 2) + 1e-30
+    return 100.0 * jnp.sqrt(jnp.sum(diff ** 2) / ref_norm_sq)
 
 
 def interpolate_ref_to_boundary(
@@ -207,6 +293,7 @@ def run_optimization(
     lambda_neighbor: float = 1e-3,
     plot_callback=None,
     plot_every: int = 1,
+    step_callback=None,
 ) -> OptimizationResult:
     """Run the optimisation loop.
 
@@ -224,10 +311,16 @@ def run_optimization(
     plot_every : int
         Plot every N steps (1 = every step). Costs one extra forward
         solve per plotted step.
+    step_callback : optional callable(step, total, cloak, l2, neighbor, params)
+        Called after each step with loss components and current params.
+        Useful for incremental CSV logging and checkpointing.
     """
     params = jax.tree.map(jnp.copy, params_init)
     opt_state = adam_init(params)
     loss_history: list[float] = []
+    cloak_history: list[float] = []
+    l2_history: list[float] = []
+    neighbor_history: list[float] = []
 
     neighbor_pairs_jnp = jnp.array(neighbor_pairs)
     boundary_indices_jnp = jnp.array(boundary_indices)
@@ -244,7 +337,24 @@ def run_optimization(
         loss_val, grads = loss_and_grad(params)
         loss_val_float = float(loss_val)
         loss_history.append(loss_val_float)
-        print(f"  Step {step:4d} | loss = {loss_val_float:.6e}")
+
+        # Compute regularisation terms cheaply (no forward pass needed)
+        L_l2 = float(l2_regularization(params, params_init))
+        L_nb = float(neighbor_regularization(params, neighbor_pairs_jnp))
+        L_cloak = loss_val_float - lambda_l2 * L_l2 - lambda_neighbor * L_nb
+        cloak_history.append(L_cloak)
+        l2_history.append(L_l2)
+        neighbor_history.append(L_nb)
+        print(
+            f"  Step {step:4d} | total = {loss_val_float:.4e}"
+            f"  cloak = {L_cloak:.4e}"
+            f"  cloak_pct = {np.sqrt(L_cloak) * 100:.2e}"  # take sq.root and multiply by 100 for percent
+            f"  L2_reg = {L_l2:.4e}"
+            f"  neighbor = {L_nb:.4e}"
+        )
+
+        if step_callback is not None:
+            step_callback(step, loss_val_float, L_cloak, L_l2, L_nb, params)
 
         # Plot current solution (extra forward pass, only every N steps)
         if plot_callback is not None and step % plot_every == 0:
@@ -259,4 +369,10 @@ def run_optimization(
         sol_list = fwd_pred(params)
         plot_callback(n_iters, np.asarray(sol_list[0]))
 
-    return OptimizationResult(params=params, loss_history=loss_history)
+    return OptimizationResult(
+        params=params,
+        loss_history=loss_history,
+        cloak_history=cloak_history,
+        l2_history=l2_history,
+        neighbor_history=neighbor_history,
+    )

@@ -79,10 +79,15 @@ class RayleighCloakProblem(Problem):
         """
         cell_C_flat, cell_rho = params
         cell_decomp = type(self)._cell_decomp
-        _, from_flat = _get_converters(type(self)._n_C_params)
 
-        # Convert flat params → full (2,2,2,2) tensors per cell
-        cell_C_full = jax.vmap(from_flat)(cell_C_flat)  # (n_cells, 2,2,2,2)
+        # Check if Nassar cell material is being used
+        nassar_mat = getattr(type(self), '_nassar_cell_material', None)
+        if nassar_mat is not None:
+            # Nassar parameterization: cell_C_flat is (n_cells, 5)
+            cell_C_full, cell_rho = nassar_mat.params_to_C_full(params)
+        else:
+            _, from_flat = _get_converters(type(self)._n_C_params)
+            cell_C_full = jax.vmap(from_flat)(cell_C_flat)  # (n_cells, 2,2,2,2)
 
         # Expand to quadrature points via precomputed mapping
         C_qp = cell_decomp.expand_to_quadpoints(
@@ -109,25 +114,58 @@ class RayleighCloakProblem(Problem):
 
     def get_mass_map(self):
         omega = self._omega
+        source_type = getattr(type(self), '_source_type', 'gaussian')
 
-        def inertia(u, _x, _C_q, rho_q, xi_q):
-            u_R, u_I = u[:2], u[2:]
-            m_R = -omega ** 2 * rho_q * (u_R + xi_q * u_I)
-            m_I = -omega ** 2 * rho_q * (u_I - xi_q * u_R)
-            return jnp.concatenate([m_R, m_I])
+        if source_type == 'plane_wave':
+            # Body force source: Gaussian line source at x = x_src
+            x_src = self._x_src
+            sigma_src = self._sigma_src
+            F0 = self._F0
+            wave_type = getattr(type(self), '_wave_type', 'P')
 
-        return inertia
+            def inertia(u, x, _C_q, rho_q, xi_q):
+                u_R, u_I = u[:2], u[2:]
+                m_R = -omega ** 2 * rho_q * (u_R + xi_q * u_I)
+                m_I = -omega ** 2 * rho_q * (u_I - xi_q * u_R)
+                # Body force: Gaussian line source (real part only)
+                f_amp = F0 * jnp.exp(-0.5 * ((x[0] - x_src) / sigma_src) ** 2)
+                if wave_type == 'P':
+                    f_body = jnp.array([f_amp, 0.0])
+                else:
+                    f_body = jnp.array([0.0, f_amp])
+                m_R = m_R + f_body
+                return jnp.concatenate([m_R, m_I])
+
+            return inertia
+        else:
+            def inertia(u, _x, _C_q, rho_q, xi_q):
+                u_R, u_I = u[:2], u[2:]
+                m_R = -omega ** 2 * rho_q * (u_R + xi_q * u_I)
+                m_I = -omega ** 2 * rho_q * (u_I - xi_q * u_R)
+                return jnp.concatenate([m_R, m_I])
+
+            return inertia
 
     def get_surface_maps(self):
-        x_src = self._x_src
-        sigma_src = self._sigma_src
+        source_type = getattr(type(self), '_source_type', 'gaussian')
         F0 = self._F0
 
-        def traction(_u, x):
-            g = F0 * jnp.exp(-0.5 * ((x[0] - x_src) / sigma_src) ** 2)
-            return jnp.array([0.0, g, 0.0, 0.0])
+        if source_type == 'plane_wave':
+            # Plane wave uses body force in get_mass_map, not surface traction.
+            # Return a zero-traction surface map (top boundary, harmless).
+            def zero_traction(_u, x):
+                return jnp.array([0.0, 0.0, 0.0, 0.0])
+            return [zero_traction]
+        else:
+            # Gaussian surface source (original Rayleigh wave setup)
+            x_src = self._x_src
+            sigma_src = self._sigma_src
 
-        return [traction]
+            def traction(_u, x):
+                g = F0 * jnp.exp(-0.5 * ((x[0] - x_src) / sigma_src) ** 2)
+                return jnp.array([0.0, g, 0.0, 0.0])
+
+            return [traction]
 
 
 # ── boundary conditions ──────────────────────────────────────────────
@@ -136,6 +174,8 @@ class RayleighCloakProblem(Problem):
 def _make_dirichlet_bc(params: DerivedParams):
     """Build the ``dirichlet_bc_info`` list for zero-displacement PML edges."""
     W_total = params.W_total
+    H_total = params.H_total
+    pml_all = getattr(params, 'pml_all_sides', False)
 
     def bc_bottom(point):
         return jnp.isclose(point[1], 0.0)
@@ -146,20 +186,24 @@ def _make_dirichlet_bc(params: DerivedParams):
     def bc_right(point):
         return jnp.isclose(point[0], W_total)
 
+    def bc_top(point):
+        return jnp.isclose(point[1], H_total)
+
     def zero(point):
         return 0.0
 
-    return [
-        [bc_bottom, bc_bottom, bc_bottom, bc_bottom,
-         bc_left,   bc_left,   bc_left,   bc_left,
-         bc_right,  bc_right,  bc_right,  bc_right],
-        [0, 1, 2, 3,
-         0, 1, 2, 3,
-         0, 1, 2, 3],
-        [zero, zero, zero, zero,
-         zero, zero, zero, zero,
-         zero, zero, zero, zero],
-    ]
+    loc_fns = [bc_bottom, bc_bottom, bc_bottom, bc_bottom,
+               bc_left,   bc_left,   bc_left,   bc_left,
+               bc_right,  bc_right,  bc_right,  bc_right]
+    dof_ids = [0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3]
+    val_fns = [zero] * 12
+
+    if pml_all:
+        loc_fns.extend([bc_top, bc_top, bc_top, bc_top])
+        dof_ids.extend([0, 1, 2, 3])
+        val_fns.extend([zero, zero, zero, zero])
+
+    return [loc_fns, dof_ids, val_fns]
 
 
 def _make_top_surface(params: DerivedParams) -> Callable:
@@ -169,6 +213,16 @@ def _make_top_surface(params: DerivedParams) -> Callable:
         return jnp.isclose(point[1], H_total)
 
     return top_surface
+
+
+def _make_left_physical_boundary(params: DerivedParams) -> Callable:
+    """Left physical boundary (x = x_off) for plane-wave source."""
+    x_off = params.x_off
+
+    def left_phys(point):
+        return jnp.isclose(point[0], x_off)
+
+    return left_phys
 
 
 # ── factory ──────────────────────────────────────────────────────────
@@ -201,6 +255,13 @@ def build_problem(
     RayleighCloakProblem._F0 = params.F0
     RayleighCloakProblem._cell_decomp = cell_decomp
     RayleighCloakProblem._n_C_params = cfg.cells.n_C_params
+    RayleighCloakProblem._source_type = cfg.source.source_type
+    RayleighCloakProblem._wave_type = cfg.source.wave_type
+    RayleighCloakProblem._lam_param = params.lam
+    RayleighCloakProblem._mu_param = params.mu
+
+    # Surface source boundary: top for both (plane wave uses body force, not surface)
+    location_fns = [_make_top_surface(params)]
 
     problem = RayleighCloakProblem(
         mesh=mesh,
@@ -208,6 +269,6 @@ def build_problem(
         dim=2,
         ele_type=cfg.mesh.ele_type,
         dirichlet_bc_info=_make_dirichlet_bc(params),
-        location_fns=[_make_top_surface(params)],
+        location_fns=location_fns,
     )
     return problem
