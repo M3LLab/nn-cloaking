@@ -152,9 +152,7 @@ annulus into a regular Cartesian grid of $n_x \times n_y$ square cells
 (Fig.~\ref{fig:cartesian_cells}).
 Each cell whose centre lies in $\{r_i < r < r_c\}$ is assigned a
 piecewise-constant effective stiffness $\mbf{c}_{\mathrm{lat}}$.
-The density is set to~\eqref{eq:rhoeff}.
-Cells outside the annulus retain the background material;
-cells inside the void are removed from the mesh.
+The density is set to~\eqref{eq:rhoeff} computed from the cell center coordinates.
 
 % Since the Nassar parameters are expressed in the local polar frame
 % $(\mbf{m}, \mbf{n})$, the stiffness tensor must be rotated to the
@@ -176,8 +174,8 @@ cells inside the void are removed from the mesh.
 \begin{figure}[H]
   \centering
   \includegraphics[width=\linewidth]{../figures/nassar_cartesian_cells.pdf}
-  \caption{Cartesian cell decomposition of the cloak annulus at
-  three grid resolutions.
+  \caption{Cartesian cell decomposition of the circular cloak at
+  different grid resolutions.
   Colour encodes the deformation parameter
   $f = (r - r_i)/r$, which controls the local anisotropy;
   $f \to 0$ near $r_i$ (near-singular) and $f \to (r_c-r_i)/r_c$
@@ -274,15 +272,15 @@ Continuous $\mbf{c}_{\mathrm{eff}}$ & $\infty$ & 27.51 \\
   \label{fig:convergence}
 \end{figure}
 
-The convergence is monotonic for grids above $10\times10$
-(Table~\ref{tab:convergence}, Fig.~\ref{fig:convergence}):
-the cell model begins worse than the bare void at very coarse
-resolution ($5\times5$, $10\times10$), because the piecewise-constant
-approximation of the singular $\mbf{c}_{\mathrm{eff}}$ near $r_i$
-introduces strong impedance mismatches at cell boundaries.
-At ${\sim}\,60\times60$ cells the cloaking quality surpasses the
-uncoated case, and at $200\times200$ cells the distortion
-approaches the continuous limit of~$27.5\%$.
+% The convergence is monotonic for grids above $10\times10$
+% (Table~\ref{tab:convergence}, Fig.~\ref{fig:convergence}):
+% the cell model begins worse than the bare void at very coarse
+% resolution ($5\times5$, $10\times10$), because the piecewise-constant
+% approximation of the singular $\mbf{c}_{\mathrm{eff}}$ near $r_i$
+% introduces strong impedance mismatches at cell boundaries.
+% At ${\sim}\,60\times60$ cells the cloaking quality surpasses the
+% uncoated case, and at $200\times200$ cells the distortion
+% approaches the continuous limit of~$27.5\%$.
 
 The residual ${\sim}\,28\%$ distortion on the right boundary even
 for the continuous cloak is questionable and requires further investigation.
@@ -291,7 +289,10 @@ for the continuous cloak is questionable and requires further investigation.
 
 To understand the role of FEM discretisation error,
 the continuous $\mbf{c}_{\mathrm{eff}}$ cloak is solved on meshes
-ranging from $80\times80$ to $250\times250$ physical elements.
+ranging from $80\times80$ to $250\times250$ physical elements. 
+Refinement x5 is applied near the circle. 
+(This is not the cell mesh from the experiment above,
+just the FEM mesh)
 
 \begin{table}[H]
 \centering
@@ -313,14 +314,12 @@ $250\times250$ & 23.02 & 1.04 & 1.06 \\
 \end{table}
 
 A power-law fit $\mathcal{D}(h) = \mathcal{D}_\infty + A\,h^p$ to the
-right-boundary distortion (where $h = 1/N$ is the characteristic mesh
-size) yields convergence exponent $p \approx 1.35$ and asymptote
+right-boundary distortion yields convergence exponent $p \approx 1.35$ and asymptote
 $\mathcal{D}_\infty \approx 19\%$ (Fig.~\ref{fig:ceff_convergence}).
-Extrapolation predicts $\mathcal{D} \approx 21\%$ at $N = 500$ and
-$\mathcal{D} \approx 20\%$ at $N = 1000$, indicating that a
+This finding indicates that a
 significant portion of the $\sim\!28\%$ residual distortion observed
 at $160\times160$ is FEM discretisation error rather than an intrinsic
-limitation of the continuous cloak.
+limitation of the continuous cloak (probably related to the discontinuity near the circle).
 
 \begin{figure}[H]
   \centering
