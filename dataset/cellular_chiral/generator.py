@@ -346,6 +346,33 @@ def generate_quadrant(
     return material
 
 
+def _assemble_squared(quadrant: NDArray[np.int8]) -> NDArray[np.int8]:
+    """Assemble a unit cell with square (D4) symmetry from four mirrored copies.
+
+    Layout (2x2):
+        TL = quadrant            | TR = flipped left-right
+        BL = flipped up-down     | BR = flipped both axes
+
+    Mirror assembly produces reflection symmetry along both the horizontal
+    and vertical center lines, yielding full square symmetry (no chirality).
+    The result is a 2N x 2N grid.
+    """
+    N = quadrant.shape[0]
+
+    tl = quadrant.copy()
+    tr = np.fliplr(quadrant)        # mirror horizontally
+    bl = np.flipud(quadrant)        # mirror vertically
+    br = np.flipud(np.fliplr(quadrant))  # mirror both
+
+    full = np.zeros((2 * N, 2 * N), dtype=np.int8)
+    full[:N, :N] = tl
+    full[:N, N:] = tr
+    full[N:, :N] = bl
+    full[N:, N:] = br
+
+    return full
+
+
 def _assemble_chiral(quadrant: NDArray[np.int8]) -> NDArray[np.int8]:
     """Assemble a chiral unit cell from four rotated copies of a quadrant.
 
@@ -372,15 +399,30 @@ def _assemble_chiral(quadrant: NDArray[np.int8]) -> NDArray[np.int8]:
     return full
 
 
-def generate_chiral_unit_cell(
+ASSEMBLY_MODES = {"chiral": _assemble_chiral, "squared": _assemble_squared}
+
+
+def generate_unit_cell(
     config: Optional[CAConfig] = None,
     seed: Optional[int] = None,
+    assembly: str = "chiral",
 ) -> Tuple[NDArray[np.int8], NDArray[np.int8]]:
-    """Generate a chiral unit cell by CA + rotational assembly.
+    """Generate a unit cell by CA + assembly.
+
+    Args:
+        config: CA generation parameters.
+        seed: Random seed for reproducibility.
+        assembly: Assembly mode — "chiral" (rotational) or "squared" (mirror/D4).
 
     Returns:
-        (unit_cell, quadrant): The full 2N×2N chiral unit cell and the N×N quadrant.
+        (unit_cell, quadrant): The full 2N×2N unit cell and the N×N quadrant.
     """
+    if assembly not in ASSEMBLY_MODES:
+        raise ValueError(f"Unknown assembly mode {assembly!r}, choose from {list(ASSEMBLY_MODES)}")
     quadrant = generate_quadrant(config=config, seed=seed)
-    unit_cell = _assemble_chiral(quadrant)
+    unit_cell = ASSEMBLY_MODES[assembly](quadrant)
     return unit_cell, quadrant
+
+
+# Keep old name as alias for backwards compatibility
+generate_chiral_unit_cell = generate_unit_cell

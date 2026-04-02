@@ -21,6 +21,20 @@ def C_iso(lam: float, mu: float) -> jnp.ndarray:
                 + jnp.einsum("il,jk->ijkl", I, I))
     )
 
+# ── 2-param isotropic (λ, μ) ────────────────────────────────────────
+
+def C_to_flat2(C: jnp.ndarray) -> jnp.ndarray:
+    """Convert (2,2,2,2) isotropic tensor to 2-param flat array [λ, μ]."""
+    mu = C[0, 1, 0, 1]
+    lam = C[0, 0, 1, 1]
+    return jnp.array([lam, mu])
+
+
+def flat2_to_C(flat: jnp.ndarray) -> jnp.ndarray:
+    """Convert 2-param flat array [λ, μ] to (2,2,2,2) isotropic tensor."""
+    return C_iso(flat[0], flat[1])
+
+
 # ── Voigt (3×3) conversions ────────────────────────────────
 def C_to_voigt3(C: jnp.ndarray) -> jnp.ndarray:
     """Convert (2,2,2,2) tensor to 3×3 Voigt matrix."""
@@ -290,6 +304,8 @@ def _get_converters(n_C_params: int):
     * **4** — minor-symmetric shear (deprecated, produces rank-3 Voigt →
       singular stiffness in the full-gradient FEM formulation).
     """
+    if n_C_params == 2:
+        return C_to_flat2, flat2_to_C
     if n_C_params == 4:
         import warnings
         warnings.warn(
@@ -309,7 +325,7 @@ def _get_converters(n_C_params: int):
         def _from16(flat):
             return voigt4_to_C(flat.reshape(4, 4))
         return _to16, _from16
-    raise ValueError(f"Unsupported n_C_params={n_C_params} (use 10, 6, or 16)")
+    raise ValueError(f"Unsupported n_C_params={n_C_params} (use 2, 6, 10, or 16)")
 
 
 # ── cell-based material model ────────────────────────────────────────
@@ -334,12 +350,14 @@ class CellMaterial:
         rho0: float,
         cell_decomp: CellDecomposition,
         n_C_params: int = 4,
+        symmetrize_init: bool = False,
     ):
         self.geometry = geometry
         self.C0 = C0
         self.rho0 = rho0
         self.cell_decomp = cell_decomp
         self.n_C_params = n_C_params
+        self.symmetrize_init = symmetrize_init
         self.to_flat, self.from_flat = _get_converters(n_C_params)
 
         self.cell_C_flat, self.cell_rho = self._initialize()
@@ -356,7 +374,7 @@ class CellMaterial:
         for i, center in enumerate(centers):
             if mask[i]:
                 x = jnp.array(center)
-                C_i = C_eff(x, self.geometry, self.C0)
+                C_i = C_eff(x, self.geometry, self.C0, symmetrize=self.symmetrize_init)
                 cell_C_list.append(self.to_flat(C_i))
                 cell_rho_list.append(float(rho_eff(x, self.geometry, self.rho0)))
             else:

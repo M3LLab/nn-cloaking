@@ -78,7 +78,8 @@ class CellConfig(BaseModel):
     enabled: bool = False
     n_x: int = 10                        # cells in x direction within cloak bbox
     n_y: int = 10                        # cells in y direction
-    n_C_params: Literal[4, 6, 10, 16] = 6   # 6=block-diag Cosserat (recommended), 16=full voigt4
+    n_C_params: Literal[2, 4, 6, 10, 16] = 6   # 2=isotropic (λ,μ), 6=block-diag Cosserat (recommended), 16=full voigt4
+    symmetrize_init: bool = False        # symmetrize C_eff (minor symmetry) when building init params
 
 
 class LossConfig(BaseModel):

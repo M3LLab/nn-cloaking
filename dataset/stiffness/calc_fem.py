@@ -197,13 +197,15 @@ def compute_average_stress(problem, sol, eps_macro, E_field):
 # ---------------------------------------------------------------------------
 # Main routine
 # ---------------------------------------------------------------------------
-def compute_effective_stiffness(pixel_image_path, output_path=None):
+def compute_effective_stiffness(pixel_image_path, output_path=None, verbose=True):
     """Compute 4x4 effective stiffness in augmented Voigt notation."""
+    _print = print if verbose else (lambda *a, **k: None)
+
     pixel_image = onp.load(pixel_image_path)
     N = pixel_image.shape[0]
     assert pixel_image.shape == (N, N), f"Expected square image, got {pixel_image.shape}"
     vf = pixel_image.astype(float).mean()
-    print(f"Loaded {pixel_image_path}: {N}x{N}, volume fraction = {vf:.3f}")
+    _print(f"Loaded {pixel_image_path}: {N}x{N}, volume fraction = {vf:.3f}")
 
     # Mesh
     points, cells = make_structured_tri_mesh(N)
@@ -234,7 +236,7 @@ def compute_effective_stiffness(pixel_image_path, output_path=None):
 
     for col, eps_macro in enumerate(load_cases):
         labels = ['e11', 'e22', 'e12', 'e21']
-        print(f"\nLoad case {col + 1}/4: {labels[col]} = 1")
+        _print(f"\nLoad case {col + 1}/4: {labels[col]} = 1")
 
         HomogenizationProblem._eps_macro = eps_macro
         HomogenizationProblem._E_field = E_field
@@ -259,25 +261,25 @@ def compute_effective_stiffness(pixel_image_path, output_path=None):
         C_eff[2, col] = float(avg_stress[0, 1])
         C_eff[3, col] = float(avg_stress[1, 0])
 
-        print(f"  sigma_11={avg_stress[0,0]:.6e}  sigma_22={avg_stress[1,1]:.6e}  "
-              f"sigma_12={avg_stress[0,1]:.6e}  sigma_21={avg_stress[1,0]:.6e}")
+        _print(f"  sigma_11={avg_stress[0,0]:.6e}  sigma_22={avg_stress[1,1]:.6e}  "
+               f"sigma_12={avg_stress[0,1]:.6e}  sigma_21={avg_stress[1,0]:.6e}")
 
-    print("\n" + "=" * 60)
-    print("Effective stiffness C_eff (4x4, augmented Voigt, Pa):")
-    print("  Rows/cols: [sigma_11, sigma_22, sigma_12, sigma_21]")
-    print("           / [e_11,     e_22,     e_12,     e_21    ]")
-    print("-" * 60)
+    _print("\n" + "=" * 60)
+    _print("Effective stiffness C_eff (4x4, augmented Voigt, Pa):")
+    _print("  Rows/cols: [sigma_11, sigma_22, sigma_12, sigma_21]")
+    _print("           / [e_11,     e_22,     e_12,     e_21    ]")
+    _print("-" * 60)
     for i in range(4):
-        print("  " + "  ".join(f"{C_eff[i, j]:12.4e}" for j in range(4)))
-    print("=" * 60)
+        _print("  " + "  ".join(f"{C_eff[i, j]:12.4e}" for j in range(4)))
+    _print("=" * 60)
 
     rho_eff = vf * RHO_CEMENT
-    print(f"\nEffective density: {rho_eff:.1f} kg/m^3  (volume fraction = {vf:.3f})")
+    _print(f"\nEffective density: {rho_eff:.1f} kg/m^3  (volume fraction = {vf:.3f})")
 
     if output_path:
         onp.savez(output_path, C_eff=C_eff, rho_eff=rho_eff,
                   volume_fraction=vf, pixel_image_path=str(pixel_image_path))
-        print(f"Saved to {output_path}")
+        _print(f"Saved to {output_path}")
 
     return C_eff, rho_eff
 

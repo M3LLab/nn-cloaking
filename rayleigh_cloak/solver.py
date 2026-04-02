@@ -135,6 +135,7 @@ def solve_cell_based(config: SimulationConfig) -> SolutionResult:
     cell_mat = CellMaterial(
         geometry, C0, params.rho0, cell_decomp,
         n_C_params=config.cells.n_C_params,
+        symmetrize_init=config.cells.symmetrize_init,
     )
     print(f"  {cell_decomp.n_cells} total cells, "
           f"{cell_decomp.n_cloak_cells} in cloak")
@@ -190,6 +191,7 @@ def solve_optimization(config: SimulationConfig, step_callback=None) -> Optimiza
     cell_mat = CellMaterial(
         geometry, C0, params.rho0, cell_decomp,
         n_C_params=config.cells.n_C_params,
+        symmetrize_init=config.cells.symmetrize_init,
     )
 
     print(f"  {cell_decomp.n_cells} total cells, "
@@ -296,6 +298,7 @@ def solve_optimization_neural(
     cell_mat = CellMaterial(
         geometry, C0, params.rho0, cell_decomp,
         n_C_params=config.cells.n_C_params,
+        symmetrize_init=config.cells.symmetrize_init,
     )
     print(f"  {cell_decomp.n_cells} total cells, "
           f"{cell_decomp.n_cloak_cells} in cloak")
