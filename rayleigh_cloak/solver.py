@@ -31,6 +31,11 @@ from rayleigh_cloak.neural_reparam import (
     make_neural_reparam,
     run_optimization_neural,
 )
+from rayleigh_cloak.neural_reparam_topo import (
+    TopoOptimizationResult,
+    make_neural_reparam_topo,
+    run_optimization_neural_topo,
+)
 from rayleigh_cloak.problem import build_problem
 
 
@@ -367,6 +372,204 @@ def solve_optimization_neural(
         lr=opt_cfg.lr,
         lambda_l2=opt_cfg.lambda_l2,
         plot_callback=_plot_step if opt_cfg.plot_every > 0 else None,
+        plot_every=opt_cfg.plot_every,
+        step_callback=step_callback,
+    )
+    return result
+
+
+def solve_optimization_neural_topo(
+    config: SimulationConfig, step_callback=None,
+) -> TopoOptimizationResult:
+    """Run topology optimisation with pixel-level density prediction.
+
+    Two-level coarse-graining:
+
+    1. **Coarse cells** (``config.cells.n_x × n_y``): used only to compute
+       target C_eff/rho_eff and match to dataset geometries.
+    2. **Fine pixels** (coarse × ``pixel_per_cell``): the MLP predicts one
+       density scalar per pixel.  Material is assigned via SIMP directly
+       at the FEM quadrature-point level.
+    """
+    import jax.numpy as jnp
+
+    from rayleigh_cloak.dataset_init import (
+        build_pixel_targets,
+        load_dataset,
+        match_cells_to_dataset,
+    )
+    from rayleigh_cloak.materials import C_to_flat2, C_to_voigt4, symmetrize_stiffness
+
+    params = DerivedParams.from_config(config)
+    geometry = _create_geometry(config, params)
+    topo_cfg = config.optimization.topo_neural
+
+    print("=== Step 1: Generating shared mesh ===")
+    full_mesh = generate_mesh_full(config, params, geometry)
+    print(f"  Full mesh: {len(full_mesh.points)} nodes, "
+          f"{len(full_mesh.cells)} elements")
+
+    print("=== Step 2: Solving reference problem (on full mesh) ===")
+    ref_result = solve_reference(config, mesh=full_mesh)
+
+    print("=== Step 3: Extracting submesh (removing defect elements) ===")
+    cloak_mesh, kept_nodes = extract_submesh(full_mesh, geometry)
+    print(f"  Submesh: {len(cloak_mesh.points)} nodes, "
+          f"{len(cloak_mesh.cells)} elements")
+
+    print("=== Step 4: Setting up coarse cell decomposition (for init) ===")
+    coarse_decomp = CellDecomposition(
+        geometry, config.cells.n_x, config.cells.n_y)
+    C0 = C_iso(params.lam, params.mu)
+    coarse_mat = CellMaterial(
+        geometry, C0, params.rho0, coarse_decomp,
+        n_C_params=config.cells.n_C_params,
+        symmetrize_init=config.cells.symmetrize_init,
+    )
+    print(f"  Coarse: {coarse_decomp.n_cells} cells, "
+          f"{coarse_decomp.n_cloak_cells} in cloak")
+
+    print("=== Step 5: Matching coarse cells to dataset ===")
+    dataset = load_dataset(topo_cfg.dataset_path)
+    print(f"  Dataset: {len(dataset.geometries)} entries")
+
+    # Compute target (λ, μ) per cell by symmetrizing the transformed C_eff
+    from rayleigh_cloak.materials import C_eff as compute_C_eff, rho_eff as compute_rho_eff
+    coarse_lam_mu = np.zeros((coarse_decomp.n_cells, 2))
+    coarse_rho = np.zeros(coarse_decomp.n_cells)
+    for i, center in enumerate(coarse_decomp.cell_centers):
+        if coarse_decomp.cloak_mask[i]:
+            x = jnp.array(center)
+            C_i = compute_C_eff(x, geometry, C0)
+            C_sym = symmetrize_stiffness(C_i)
+            coarse_lam_mu[i] = np.asarray(C_to_flat2(C_sym))
+            coarse_rho[i] = float(compute_rho_eff(x, geometry, params.rho0))
+        else:
+            coarse_lam_mu[i] = np.array([params.lam, params.mu])
+            coarse_rho[i] = params.rho0
+
+    matched_geoms, matched_idx = match_cells_to_dataset(
+        coarse_lam_mu, coarse_rho, coarse_decomp.cloak_mask,
+        dataset,
+    )
+    print(f"  Matched {len(matched_idx)} cloak cells to dataset entries")
+
+    print("=== Step 6: Building fine pixel grid ===")
+    ppc = topo_cfg.pixel_per_cell
+    n_fine_x = config.cells.n_x * ppc
+    n_fine_y = config.cells.n_y * ppc
+    fine_decomp = CellDecomposition(geometry, n_fine_x, n_fine_y)
+    print(f"  Fine grid: {n_fine_x}×{n_fine_y} = {fine_decomp.n_cells} pixels, "
+          f"{fine_decomp.n_cloak_cells} in cloak")
+
+    # Build pixel-level density targets from matched geometries
+    pixel_targets = build_pixel_targets(
+        matched_geoms, config.cells.n_x, config.cells.n_y,
+        ppc, coarse_decomp.cloak_mask,
+    )
+
+    print("=== Step 7: Setting up topology neural reparameterization ===")
+    # Cement Lamé parameters
+    E_c = topo_cfg.E_cement
+    nu_c = topo_cfg.nu_micro
+    lam_cement = E_c * nu_c / ((1 + nu_c) * (1 - 2 * nu_c))
+    mu_cement = E_c / (2 * (1 + nu_c))
+    C0_flat = jnp.array(C_to_flat2(C0))
+
+    theta_init, reparam = make_neural_reparam_topo(
+        fine_decomp,
+        C0_flat=C0_flat,
+        rho0=params.rho0,
+        lam_cement=lam_cement,
+        mu_cement=mu_cement,
+        rho_cement=topo_cfg.rho_cement,
+        pixel_targets=pixel_targets,
+        hidden_size=topo_cfg.hidden_size,
+        n_layers=topo_cfg.n_layers,
+        n_fourier=topo_cfg.n_fourier,
+        seed=topo_cfg.seed,
+        simp_p=topo_cfg.simp_p,
+        output_scale=topo_cfg.output_scale,
+        density_eps=topo_cfg.density_eps,
+    )
+    n_weights = sum(p["W"].size + p["b"].size for p in theta_init)
+    print(f"  MLP: {topo_cfg.n_layers} layers, "
+          f"{topo_cfg.hidden_size} hidden, "
+          f"{n_weights} total weights, output_dim=1"
+          f" (residual logit init from dataset targets)")
+
+    # Build FEM problem with fine pixel decomposition
+    # n_C_params MUST be 2 for isotropic SIMP material
+    problem = build_problem(
+        cloak_mesh, config, params, geometry, fine_decomp,
+        n_C_params_override=2,
+    )
+
+    x_right = params.x_off + params.W
+    boundary_indices = get_right_boundary_indices(
+        np.asarray(cloak_mesh.points), x_right)
+    print(f"  {len(boundary_indices)} boundary nodes for loss")
+
+    u_ref_boundary = ref_result.u[kept_nodes[boundary_indices]]
+
+    # Get initial material params from the decode (post-pretrain)
+    params_init = reparam.decode(theta_init)
+
+    solver_opts = {
+        "petsc_solver": {
+            "ksp_type": config.solver.ksp_type,
+            "pc_type": config.solver.pc_type,
+        }
+    }
+    adjoint_opts = {
+        "petsc_solver": {
+            "ksp_type": config.solver.ksp_type,
+            "pc_type": config.solver.pc_type,
+        }
+    }
+    fwd_pred = ad_wrapper(problem, solver_opts, adjoint_opts)
+
+    pts_x = np.asarray(cloak_mesh.points[:, 0])
+    pts_y = np.asarray(cloak_mesh.points[:, 1])
+    step_dir = f"{config.output_dir}/opt_steps"
+
+    def _plot_step(step: int, u: np.ndarray) -> None:
+        from rayleigh_cloak.plot import plot_displacement_field
+        plot_displacement_field(
+            u, pts_x, pts_y, params,
+            save_path=f"{step_dir}/step_{step:04d}.png",
+            title=f"|Re(u)| — step {step}",
+        )
+
+    # Density visualisation: cloak mask reshaped to 2D for overlay
+    cloak_mask_2d = np.array(fine_decomp.cloak_mask).reshape(
+        fine_decomp.n_x, fine_decomp.n_y).T  # (n_y, n_x)
+    density_dir = f"{config.output_dir}/density_steps"
+
+    def _plot_density(step: int, density_grid: np.ndarray) -> None:
+        from rayleigh_cloak.neural_reparam_topo import plot_density_grid
+        plot_density_grid(
+            density_grid, step,
+            save_path=f"{density_dir}/density_{step:04d}.png",
+            cloak_mask_2d=cloak_mask_2d,
+        )
+
+    print("=== Step 8: Optimising (topology neural reparam) ===")
+    opt_cfg = config.optimization
+    do_plot = opt_cfg.plot_every > 0
+    result = run_optimization_neural_topo(
+        fwd_pred=fwd_pred,
+        params_init=params_init,
+        u_ref_boundary=u_ref_boundary,
+        boundary_indices=boundary_indices,
+        reparam=reparam,
+        theta_init=theta_init,
+        n_iters=opt_cfg.n_iters,
+        lr=opt_cfg.lr,
+        lambda_l2=opt_cfg.lambda_l2,
+        lambda_bin=topo_cfg.lambda_bin,
+        plot_callback=_plot_step if do_plot else None,
+        density_callback=_plot_density if do_plot else None,
         plot_every=opt_cfg.plot_every,
         step_callback=step_callback,
     )

@@ -17,7 +17,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from rayleigh_cloak import load_config
-from rayleigh_cloak.solver import solve_optimization, solve_optimization_neural
+from rayleigh_cloak.solver import (
+    solve_optimization,
+    solve_optimization_neural,
+    solve_optimization_neural_topo,
+)
 import logging
 logging.getLogger("jax_fem").setLevel(logging.WARNING)
 
@@ -87,7 +91,10 @@ def main(config_path: str = "configs/cell_based.yaml") -> None:
 
     method = config.optimization.method
     try:
-        if method == "neural":
+        if method == "neural_topo":
+            print(f"Using topology neural reparameterization (method={method})")
+            result = solve_optimization_neural_topo(config, step_callback=_log_step)
+        elif method == "neural":
             print(f"Using neural reparameterization (method={method})")
             result = solve_optimization_neural(config, step_callback=_log_step)
         else:

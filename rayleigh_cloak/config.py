@@ -96,9 +96,26 @@ class NeuralReparamConfig(BaseModel):
     output_scale: float = 0.1  # multiplier on MLP residual (controls max step size)
 
 
+class TopoNeuralConfig(BaseModel):
+    """Settings for topology neural reparameterization (pixel-level density)."""
+    hidden_size: int = 256
+    n_layers: int = 4
+    n_fourier: int = 32
+    seed: int = 42
+    pixel_per_cell: int = 10       # fine pixels per coarse cell edge
+    simp_p: float = 3.0            # SIMP penalisation exponent
+    E_cement: float = 30e9         # Pa, solid-phase Young's modulus
+    nu_micro: float = 0.2          # solid-phase Poisson's ratio
+    rho_cement: float = 2300.0     # kg/m^3, solid-phase density
+    lambda_bin: float = 0.01       # binarisation penalty weight
+    dataset_path: str = "output/dataset_30k.h5"
+    output_scale: float = 0.1     # MLP residual scale in logit space
+    density_eps: float = 0.01     # clamp targets away from 0/1 for finite logits
+
+
 class OptimizationConfig(BaseModel):
     """Settings for cell-based material optimization."""
-    method: Literal["raw", "neural"] = "raw"  # "raw" = direct params, "neural" = MLP reparam
+    method: Literal["raw", "neural", "neural_topo"] = "raw"
     n_iters: int = 100
     lr: float = 1e-3
     lambda_l2: float = 1e-4       # L2 regularization (drift from init)
@@ -106,6 +123,7 @@ class OptimizationConfig(BaseModel):
     plot_every: int = 1            # plot |Re(u)| every N steps (0 = disabled)
     init_params: str = ""          # path to .npz with cell_C_flat/cell_rho for warm-start
     neural: NeuralReparamConfig = NeuralReparamConfig()
+    topo_neural: TopoNeuralConfig = TopoNeuralConfig()
 
 
 class NassarConfig(BaseModel):

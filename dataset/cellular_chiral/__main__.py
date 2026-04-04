@@ -8,17 +8,19 @@ from .generator import CAConfig, generate_unit_cell, ASSEMBLY_MODES
 from .visualize import plot_quadrant_and_cell
 
 
-def generate_dataset(N: int, seed: int, assembly: str, out_dir: Path):
+def generate_dataset(N: int, seed: int, assembly: str, out_dir: Path, plot: bool = True):
     dataset_dir = out_dir / "dataset"
-    individual_dir = out_dir / "individual"
     dataset_dir.mkdir(parents=True, exist_ok=True)
-    individual_dir.mkdir(parents=True, exist_ok=True)
+    if plot:
+        individual_dir = out_dir / "individual"
+        individual_dir.mkdir(parents=True, exist_ok=True)
 
     config = CAConfig()
 
     for s in tqdm(range(seed, seed + N), desc="Generating", unit="cell"):
         uc, q = generate_unit_cell(config=config, seed=s, assembly=assembly)
-        plot_quadrant_and_cell(q, uc, s, save_path=individual_dir / f"seed_{s}.png")
+        if plot:
+            plot_quadrant_and_cell(q, uc, s, save_path=individual_dir / f"seed_{s}.png")
         np.save(dataset_dir / f"seed_{s}.npy", uc)
 
 
@@ -38,8 +40,13 @@ def main():
         default=Path("output/ca_chiral"),
         help="Output directory",
     )
+    parser.add_argument(
+        "--no-plot", action="store_true",
+        help="Skip PNG plot generation",
+    )
     args = parser.parse_args()
-    generate_dataset(N=args.num, seed=args.seed, assembly=args.assembly, out_dir=args.output)
+    generate_dataset(N=args.num, seed=args.seed, assembly=args.assembly,
+                     out_dir=args.output, plot=not args.no_plot)
 
 
 main()

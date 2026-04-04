@@ -234,6 +234,7 @@ def build_problem(
     params: DerivedParams,
     geometry: CloakGeometry,
     cell_decomp: CellDecomposition | None = None,
+    n_C_params_override: int | None = None,
 ) -> RayleighCloakProblem:
     """Assemble a ``RayleighCloakProblem`` ready for solving.
 
@@ -241,6 +242,9 @@ def build_problem(
     ----------
     cell_decomp : optional
         If provided, enables ``set_params`` for cell-based optimisation.
+    n_C_params_override : optional
+        Override ``cfg.cells.n_C_params`` (used by topology optimisation
+        which always uses 2-param isotropic representation).
     """
     C0 = C_iso(params.lam, params.mu)
 
@@ -254,7 +258,7 @@ def build_problem(
     RayleighCloakProblem._sigma_src = params.sigma_src
     RayleighCloakProblem._F0 = params.F0
     RayleighCloakProblem._cell_decomp = cell_decomp
-    RayleighCloakProblem._n_C_params = cfg.cells.n_C_params
+    RayleighCloakProblem._n_C_params = n_C_params_override or cfg.cells.n_C_params
     RayleighCloakProblem._source_type = cfg.source.source_type
     RayleighCloakProblem._wave_type = cfg.source.wave_type
     RayleighCloakProblem._lam_param = params.lam
