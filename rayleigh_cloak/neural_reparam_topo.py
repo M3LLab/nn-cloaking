@@ -28,6 +28,7 @@ from rayleigh_cloak.neural_reparam import (
     fourier_features,
     init_mlp,
     mlp_forward,
+    random_fourier_features,
 )
 from rayleigh_cloak.optimize import (
     adam_init,
@@ -80,55 +81,55 @@ class NeuralReparamTopo:
     simp_p: float = 3.0
     n_C_params: int = 2
 
-    def decode(self, theta: list[dict]) -> tuple[jnp.ndarray, jnp.ndarray]:
+    def _cloak_densities(self, theta: list[dict], beta: float = 1.0) -> jnp.ndarray:
+        """Compute densities for cloak pixels only. Shape: (n_cloak,)."""
+        cloak_features = self.cell_features[self.cloak_idx]       # (n_cloak, n_features)
+        cloak_baseline = self.logit_baseline[self.cloak_idx]      # (n_cloak,)
+        raw = mlp_forward(theta, cloak_features)                  # (n_cloak, 1)
+        logit = cloak_baseline + self.output_scale * raw[:, 0]
+        density_soft = jax.nn.sigmoid(logit)
+        return jax.nn.sigmoid(beta * (density_soft - 0.5))
+
+    def decode(self, theta: list[dict], beta: float = 1.0) -> tuple[jnp.ndarray, jnp.ndarray]:
         """Map MLP weights → (cell_C_flat, cell_rho).
 
-        Residual in logit space:
-            density = sigmoid(logit_baseline + output_scale * mlp(features))
-        At init (mlp ≈ 0), density ≈ sigmoid(logit_baseline) = target pattern.
-        Non-cloak pixels keep their background values.
+        Only evaluates the MLP on cloak pixels; non-cloak pixels get
+        background values directly.
         """
         n_pixels = self.cell_features.shape[0]
-
-        # MLP predicts a small logit correction per pixel
-        raw = mlp_forward(theta, self.cell_features)  # (n_pixels, 1)
-        logit = self.logit_baseline + self.output_scale * raw[:, 0]
-        density_all = jax.nn.sigmoid(logit)            # (n_pixels,)
+        density_cloak = self._cloak_densities(theta, beta)  # (n_cloak,)
 
         # SIMP: scale Lamé parameters by density^p
-        penalised = density_all ** self.simp_p  # (n_pixels,)
-        lam = self.lam_cement * penalised       # (n_pixels,)
-        mu = self.mu_cement * penalised         # (n_pixels,)
+        penalised = density_cloak ** self.simp_p
+        lam = self.lam_cement * penalised
+        mu = self.mu_cement * penalised
 
-        # Build flat C: [lam, mu] per pixel
-        cell_C_flat = jnp.stack([lam, mu], axis=-1)  # (n_pixels, 2)
+        # Scatter cloak values into full arrays with background defaults
+        cell_C_flat = jnp.tile(self.C0_flat, (n_pixels, 1))         # (n_pixels, 2)
+        cloak_C = jnp.stack([lam, mu], axis=-1)                     # (n_cloak, 2)
+        cell_C_flat = cell_C_flat.at[self.cloak_idx].set(cloak_C)
 
-        # Mass density scales linearly with density
-        cell_rho = self.rho_cement * density_all      # (n_pixels,)
-
-        # Non-cloak pixels: use background values
-        cell_C_flat = jnp.where(
-            self.cloak_mask[:, None], cell_C_flat, self.C0_flat[None, :]
-        )
-        cell_rho = jnp.where(self.cloak_mask, cell_rho, self.rho0)
+        cell_rho = jnp.full(n_pixels, self.rho0)                    # (n_pixels,)
+        cell_rho = cell_rho.at[self.cloak_idx].set(self.rho_cement * density_cloak)
 
         return (cell_C_flat, cell_rho)
 
-    def get_densities(self, theta: list[dict]) -> jnp.ndarray:
-        """Extract pixel densities (for binarisation penalty)."""
-        raw = mlp_forward(theta, self.cell_features)
-        logit = self.logit_baseline + self.output_scale * raw[:, 0]
-        return jax.nn.sigmoid(logit)
+    def get_densities(self, theta: list[dict], beta: float = 1.0) -> jnp.ndarray:
+        """Pixel densities: cloak pixels from MLP, non-cloak = -1 (sentinel)."""
+        n_pixels = self.cell_features.shape[0]
+        density_cloak = self._cloak_densities(theta, beta)
+        out = jnp.full(n_pixels, -1.0)
+        return out.at[self.cloak_idx].set(density_cloak)
 
-    def get_density_grid(self, theta: list[dict]) -> np.ndarray:
+    def get_density_grid(self, theta: list[dict], beta: float = 1.0) -> np.ndarray:
         """Return densities as a 2D (n_y, n_x) array for visualisation.
 
+        Cloak pixels have density in [0, 1]; non-cloak pixels are NaN.
         The array is oriented so that row 0 = bottom (low y) and the last
         row = top (high y), suitable for ``imshow(origin='lower')``.
-        CellDecomposition indexing: ``idx = ix * n_y + iy``, so we reshape
-        to ``(n_x, n_y)`` then transpose to ``(n_y, n_x)``.
         """
-        densities = np.asarray(self.get_densities(theta))  # (n_pixels,)
+        densities = np.asarray(self.get_densities(theta, beta=beta))  # (n_pixels,)
+        densities = np.where(densities < 0, np.nan, densities)
         grid = densities.reshape(self.n_x, self.n_y)       # (n_x, n_y)
         return grid.T                                       # (n_y, n_x)
 
@@ -149,6 +150,7 @@ def make_neural_reparam_topo(
     simp_p: float = 3.0,
     output_scale: float = 0.1,
     density_eps: float = 0.01,
+    fourier_sigma: float = 0.0,
 ) -> tuple[list[dict], NeuralReparamTopo]:
     """Create a NeuralReparamTopo and initialise MLP weights.
 
@@ -159,6 +161,10 @@ def make_neural_reparam_topo(
         starts exactly at the matched pattern.
     density_eps : float — clamp targets away from 0/1 to keep logits finite.
     output_scale : float — scale of MLP correction in logit space.
+    fourier_sigma : float — bandwidth for random Fourier features.
+        If > 0, uses random projections B ~ N(0, sigma^2) instead of
+        axis-aligned linspace frequencies.  Higher values resolve finer
+        spatial detail.
 
     Returns
     -------
@@ -173,7 +179,13 @@ def make_neural_reparam_topo(
     hi = centers.max(axis=0)
     centers_norm = (centers - lo) / (hi - lo + 1e-10)
 
-    features = fourier_features(centers_norm, n_fourier)
+    if fourier_sigma > 0:
+        fourier_key = jax.random.PRNGKey(seed + 1)
+        features, _ = random_fourier_features(
+            centers_norm, n_freq=n_fourier, sigma=fourier_sigma, key=fourier_key,
+        )
+    else:
+        features = fourier_features(centers_norm, n_fourier)
     n_features = features.shape[1]
 
     mask = jnp.array(cell_decomp.cloak_mask)
@@ -220,10 +232,10 @@ def make_neural_reparam_topo(
 def binarisation_penalty(
     theta: list[dict],
     reparam: NeuralReparamTopo,
+    beta: float = 1.0,
 ) -> jnp.ndarray:
     """SIMP binarisation penalty: 4*rho*(1-rho) averaged over cloak pixels."""
-    densities = reparam.get_densities(theta)
-    cloak_rho = densities[reparam.cloak_idx]
+    cloak_rho = reparam._cloak_densities(theta, beta=beta)
     return jnp.mean(4.0 * cloak_rho * (1.0 - cloak_rho))
 
 
@@ -309,6 +321,8 @@ def run_optimization_neural_topo(
     lr: float = 1e-3,
     lambda_l2: float = 1e-4,
     lambda_bin: float = 0.01,
+    beta_start: float = 1.0,
+    beta_end: float = 32.0,
     plot_callback=None,
     density_callback=None,
     plot_every: int = 1,
@@ -337,68 +351,75 @@ def run_optimization_neural_topo(
 
     boundary_indices_jnp = jnp.array(boundary_indices)
 
-    def loss_fn(theta):
-        params = reparam.decode(theta)
+    def loss_fn(theta, beta):
+        params = reparam.decode(theta, beta=beta)
         sol_list = fwd_pred(params)
         u_cloak = sol_list[0]
         L_cloak = cloaking_loss(u_cloak, u_ref_boundary, boundary_indices_jnp)
         L_l2 = l2_regularization(params, params_init)
-        L_bin = binarisation_penalty(theta, reparam)
+        L_bin = binarisation_penalty(theta, reparam, beta=beta)
         return L_cloak + lambda_l2 * L_l2 + lambda_bin * L_bin, L_cloak
 
     loss_and_grad = jax.value_and_grad(
-        lambda t: loss_fn(t)[0],
+        lambda t, b: loss_fn(t, b)[0],
+        argnums=0,
         has_aux=False,
     )
 
-    def _get_components(theta):
-        params = reparam.decode(theta)
+    def _get_components(theta, beta):
+        params = reparam.decode(theta, beta=beta)
         L_l2 = float(l2_regularization(params, params_init))
-        L_bin = float(binarisation_penalty(theta, reparam))
+        L_bin = float(binarisation_penalty(theta, reparam, beta=beta))
         return L_l2, L_bin
 
     for step in range(n_iters):
-        loss_val, grads = loss_and_grad(theta)
+        # Linear annealing of Heaviside projection sharpness
+        beta = beta_start + (beta_end - beta_start) * step / max(n_iters - 1, 1)
+        loss_val, grads = loss_and_grad(theta, beta)
         loss_val_float = float(loss_val)
         loss_history.append(loss_val_float)
 
-        L_l2, L_bin = _get_components(theta)
+        L_l2, L_bin = _get_components(theta, beta)
         L_cloak = loss_val_float - lambda_l2 * L_l2 - lambda_bin * L_bin
         cloak_history.append(L_cloak)
         l2_history.append(L_l2)
         bin_history.append(L_bin)
 
+        grad_norm = float(jnp.sqrt(sum(
+            jnp.sum(l["W"]**2) + jnp.sum(l["b"]**2) for l in grads
+        )))
         print(
             f"  Step {step:4d} | total = {loss_val_float:.4e}"
-            # f"  cloak = {L_cloak:.4e}"
             f"  cloak_pct = {np.sqrt(max(L_cloak, 0)) * 100:.2f}"
             f"  L2 = {L_l2:.4e}"
             f"  bin = {L_bin:.4e}"
+            f"  beta = {beta:.1f}"
+            f"  |grad| = {grad_norm:.4e}"
         )
 
         if step_callback is not None:
-            params = reparam.decode(theta)
+            params = reparam.decode(theta, beta=beta)
             step_callback(step, loss_val_float, L_cloak, L_l2, L_bin, params)
 
         if step % plot_every == 0:
             if plot_callback is not None:
-                params = reparam.decode(theta)
+                params = reparam.decode(theta, beta=beta)
                 sol_list = fwd_pred(params)
                 plot_callback(step, np.asarray(sol_list[0]))
             if density_callback is not None:
-                density_callback(step, reparam.get_density_grid(theta))
+                density_callback(step, reparam.get_density_grid(theta, beta=beta))
 
         updates, opt_state = adam_update(grads, opt_state, lr=lr)
         theta = jax.tree.map(lambda p, u: p + u, theta, updates)
 
-    # Final state
-    final_params = reparam.decode(theta)
+    # Final state (use beta_end for sharpest projection)
+    final_params = reparam.decode(theta, beta=beta_end)
 
     if plot_callback is not None:
         sol_list = fwd_pred(final_params)
         plot_callback(n_iters, np.asarray(sol_list[0]))
     if density_callback is not None:
-        density_callback(n_iters, reparam.get_density_grid(theta))
+        density_callback(n_iters, reparam.get_density_grid(theta, beta=beta_end))
 
     return TopoOptimizationResult(
         theta=theta,

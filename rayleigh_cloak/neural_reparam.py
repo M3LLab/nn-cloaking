@@ -72,6 +72,28 @@ def fourier_features(xy: jnp.ndarray, n_freq: int = 32) -> jnp.ndarray:
     ], axis=-1)  # (n, 4*n_freq)
 
 
+def random_fourier_features(
+    xy: jnp.ndarray,
+    n_freq: int = 256,
+    sigma: float = 10.0,
+    key: jax.random.PRNGKey | None = None,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Map (n, 2) coordinates to (n, 2*n_freq) random Fourier features.
+
+    Draws a random projection matrix B ~ N(0, sigma^2) of shape (2, n_freq).
+    The features are [sin(2π xy B), cos(2π xy B)].  Higher sigma enables
+    the network to represent higher spatial frequencies.
+
+    Returns (features, B) so that B can be stored for reproducibility.
+    """
+    if key is None:
+        key = jax.random.PRNGKey(0)
+    B = sigma * jax.random.normal(key, (2, n_freq))  # (2, n_freq)
+    proj = 2.0 * jnp.pi * xy @ B                      # (n, n_freq)
+    features = jnp.concatenate([jnp.sin(proj), jnp.cos(proj)], axis=-1)
+    return features, B
+
+
 # ── Reparameterization ───────────────────────────────────────────────
 
 

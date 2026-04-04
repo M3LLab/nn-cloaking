@@ -108,9 +108,13 @@ class TopoNeuralConfig(BaseModel):
     nu_micro: float = 0.2          # solid-phase Poisson's ratio
     rho_cement: float = 2300.0     # kg/m^3, solid-phase density
     lambda_bin: float = 0.01       # binarisation penalty weight
+    rho_weight: float = 0.1        # weight for density in dataset matching
     dataset_path: str = "output/dataset_30k.h5"
     output_scale: float = 0.1     # MLP residual scale in logit space
     density_eps: float = 0.01     # clamp targets away from 0/1 for finite logits
+    beta_start: float = 1.0       # Heaviside projection sharpness at start
+    beta_end: float = 32.0        # Heaviside projection sharpness at end
+    fourier_sigma: float = 0.0    # random Fourier bandwidth (0 = axis-aligned linspace)
 
 
 class OptimizationConfig(BaseModel):

@@ -64,10 +64,9 @@ class CellDecomposition:
         # Flatten in row-major (x varies slowest): cell_idx = ix * n_y + iy
         self.cell_centers = np.stack([gx.ravel(), gy.ravel()], axis=-1)
 
-        # Evaluate in_cloak at each centre (numpy, not traced)
-        self.cloak_mask = np.array([
-            bool(geo.in_cloak(jnp.array(c))) for c in self.cell_centers
-        ])
+        # Evaluate in_cloak at all centres in one vectorised call
+        all_centers = jnp.array(self.cell_centers.T)  # (2, n_cells)
+        self.cloak_mask = np.asarray(geo.in_cloak(all_centers), dtype=bool)
 
     # ── properties ────────────────────────────────────────────────────
 

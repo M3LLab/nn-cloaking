@@ -451,6 +451,7 @@ def solve_optimization_neural_topo(
     matched_geoms, matched_idx = match_cells_to_dataset(
         coarse_lam_mu, coarse_rho, coarse_decomp.cloak_mask,
         dataset,
+        rho_weight=topo_cfg.rho_weight,
     )
     print(f"  Matched {len(matched_idx)} cloak cells to dataset entries")
 
@@ -491,6 +492,7 @@ def solve_optimization_neural_topo(
         simp_p=topo_cfg.simp_p,
         output_scale=topo_cfg.output_scale,
         density_eps=topo_cfg.density_eps,
+        fourier_sigma=topo_cfg.fourier_sigma,
     )
     n_weights = sum(p["W"].size + p["b"].size for p in theta_init)
     print(f"  MLP: {topo_cfg.n_layers} layers, "
@@ -528,6 +530,7 @@ def solve_optimization_neural_topo(
         }
     }
     fwd_pred = ad_wrapper(problem, solver_opts, adjoint_opts)
+
 
     pts_x = np.asarray(cloak_mesh.points[:, 0])
     pts_y = np.asarray(cloak_mesh.points[:, 1])
@@ -568,6 +571,8 @@ def solve_optimization_neural_topo(
         lr=opt_cfg.lr,
         lambda_l2=opt_cfg.lambda_l2,
         lambda_bin=topo_cfg.lambda_bin,
+        beta_start=topo_cfg.beta_start,
+        beta_end=topo_cfg.beta_end,
         plot_callback=_plot_step if do_plot else None,
         density_callback=_plot_density if do_plot else None,
         plot_every=opt_cfg.plot_every,
