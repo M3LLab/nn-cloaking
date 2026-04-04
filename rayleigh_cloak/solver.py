@@ -312,7 +312,7 @@ def solve_optimization_neural(
 
     x_right = params.x_off + params.W
     boundary_indices = get_right_boundary_indices(
-        np.asarray(cloak_mesh.points), x_right)
+        np.asarray(cloak_mesh.points), x_right, tol=config.loss.tol)
     print(f"  {len(boundary_indices)} boundary nodes for loss")
 
     u_ref_boundary = ref_result.u[kept_nodes[boundary_indices]]
@@ -509,7 +509,7 @@ def solve_optimization_neural_topo(
 
     x_right = params.x_off + params.W
     boundary_indices = get_right_boundary_indices(
-        np.asarray(cloak_mesh.points), x_right)
+        np.asarray(cloak_mesh.points), x_right, tol=config.loss.tol)
     print(f"  {len(boundary_indices)} boundary nodes for loss")
 
     u_ref_boundary = ref_result.u[kept_nodes[boundary_indices]]
