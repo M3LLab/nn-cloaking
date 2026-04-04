@@ -1,8 +1,22 @@
 """Plot right-boundary cloaking distortion vs iteration for two optimisation approaches."""
 
+import argparse
+from pathlib import Path
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+
+from rayleigh_cloak.config import load_config
+
+# ── Config ─────────────────────────────────────────────────────────────
+parser = argparse.ArgumentParser(description="Plot loss history for an experiment.")
+parser.add_argument("config", help="Path to YAML config file")
+parser.add_argument("-n", type=int, default=None, help="Number of steps to plot (default: all)")
+args = parser.parse_args()
+
+cfg = load_config(args.config)
+output_dir = Path(cfg.output_dir)
 
 # ── Style ──────────────────────────────────────────────────────────────
 mpl.rcParams.update({
@@ -18,11 +32,11 @@ mpl.rcParams.update({
 
 # ── Load data ──────────────────────────────────────────────────────────
 loss = np.genfromtxt(
-    "output/circular_optimize_neural/loss_history.csv",
+    output_dir / "loss_history.csv",
     delimiter=",", names=True,
 )
 
-N = 100  # first 55 steps
+N = args.n if args.n is not None else len(loss)
 
 neural_steps = loss["step"][:N].astype(int)
 neural_D = 100.0 * np.sqrt(loss["cloak"][:N])
@@ -44,6 +58,7 @@ ax.legend(frameon=True, fancybox=False, edgecolor="0.7")
 ax.grid(True, linewidth=0.3, alpha=0.6)
 
 fig.tight_layout()
-fig.savefig("output/loss.png")
-print("Saved to output/loss.png")
+out_path = output_dir / "loss.png"
+fig.savefig(out_path)
+print(f"Saved to {out_path}")
 plt.show()
