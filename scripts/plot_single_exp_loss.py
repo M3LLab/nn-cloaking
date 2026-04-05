@@ -11,12 +11,20 @@ from rayleigh_cloak.config import load_config
 
 # ── Config ─────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="Plot loss history for an experiment.")
-parser.add_argument("config", help="Path to YAML config file")
+parser.add_argument("source", help="Path to YAML config or loss CSV file")
 parser.add_argument("-n", type=int, default=None, help="Number of steps to plot (default: all)")
 args = parser.parse_args()
 
-cfg = load_config(args.config)
-output_dir = Path(cfg.output_dir)
+source = Path(args.source)
+if source.suffix in (".yaml", ".yml"):
+    cfg = load_config(str(source))
+    output_dir = Path(cfg.output_dir)
+    loss_csv = output_dir / "loss_history.csv"
+elif source.suffix == ".csv":
+    loss_csv = source
+    output_dir = loss_csv.parent
+else:
+    parser.error(f"unsupported file type '{source.suffix}', expected .yaml/.yml or .csv")
 
 # ── Style ──────────────────────────────────────────────────────────────
 mpl.rcParams.update({
@@ -32,7 +40,7 @@ mpl.rcParams.update({
 
 # ── Load data ──────────────────────────────────────────────────────────
 loss = np.genfromtxt(
-    output_dir / "loss_history.csv",
+    loss_csv,
     delimiter=",", names=True,
 )
 
