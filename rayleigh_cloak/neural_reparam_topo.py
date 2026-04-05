@@ -319,6 +319,7 @@ def run_optimization_neural_topo(
     theta_init: list[dict],
     n_iters: int = 100,
     lr: float = 1e-3,
+    lr_end: float | None = None,
     lambda_l2: float = 1e-4,
     lambda_bin: float = 0.01,
     beta_start: float = 1.0,
@@ -375,6 +376,9 @@ def run_optimization_neural_topo(
     for step in range(n_iters):
         # Linear annealing of Heaviside projection sharpness
         beta = beta_start + (beta_end - beta_start) * step / max(n_iters - 1, 1)
+        # Learning rate schedule
+        t_frac = step / max(n_iters - 1, 1)
+        cur_lr = lr + (lr_end - lr) * t_frac if lr_end is not None else lr
         loss_val, grads = loss_and_grad(theta, beta)
         loss_val_float = float(loss_val)
         loss_history.append(loss_val_float)
@@ -394,6 +398,7 @@ def run_optimization_neural_topo(
             f"  L2 = {L_l2:.4e}"
             f"  bin = {L_bin:.4e}"
             f"  beta = {beta:.1f}"
+            f"  lr = {cur_lr:.2e}"
             f"  |grad| = {grad_norm:.4e}"
         )
 
@@ -409,7 +414,7 @@ def run_optimization_neural_topo(
             if density_callback is not None:
                 density_callback(step, reparam.get_density_grid(theta, beta=beta))
 
-        updates, opt_state = adam_update(grads, opt_state, lr=lr)
+        updates, opt_state = adam_update(grads, opt_state, lr=cur_lr)
         theta = jax.tree.map(lambda p, u: p + u, theta, updates)
 
     # Final state (use beta_end for sharpest projection)

@@ -569,6 +569,7 @@ def solve_optimization_neural_topo(
         theta_init=theta_init,
         n_iters=opt_cfg.n_iters,
         lr=opt_cfg.lr,
+        lr_end=opt_cfg.lr_end,
         lambda_l2=opt_cfg.lambda_l2,
         lambda_bin=topo_cfg.lambda_bin,
         beta_start=topo_cfg.beta_start,
