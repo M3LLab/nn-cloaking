@@ -239,6 +239,26 @@ def binarisation_penalty(
     return jnp.mean(4.0 * cloak_rho * (1.0 - cloak_rho))
 
 
+def material_proximity_metrics(
+    theta: list[dict],
+    reparam: NeuralReparamTopo,
+    beta: float = 1.0,
+) -> dict[str, float]:
+    """Compute relative error of cloak pixel materials from solid cement.
+
+    For cloak pixel with density d:
+      C_pixel = C_cement * d^p   →  C relative error = mean(|1 - d^p|)
+      rho_pixel = rho_cement * d →  rho relative error = mean(|1 - d|)
+
+    Returns dict with keys: vol_frac, C_rel_err, rho_rel_err.
+    """
+    density = reparam._cloak_densities(theta, beta=beta)  # (n_cloak,)
+    vol_frac = float(jnp.mean(density))
+    C_rel_err = float(jnp.mean(jnp.abs(1.0 - density ** reparam.simp_p)))
+    rho_rel_err = float(jnp.mean(jnp.abs(1.0 - density)))
+    return {"vol_frac": vol_frac, "C_rel_err": C_rel_err, "rho_rel_err": rho_rel_err}
+
+
 # ── Optimisation loop ───────────────────────────────────────────────
 
 
@@ -251,6 +271,9 @@ class TopoOptimizationResult:
     cloak_history: list[float] = field(default_factory=list)
     l2_history: list[float] = field(default_factory=list)
     bin_history: list[float] = field(default_factory=list)
+    vol_frac_history: list[float] = field(default_factory=list)
+    C_rel_err_history: list[float] = field(default_factory=list)
+    rho_rel_err_history: list[float] = field(default_factory=list)
 
 
 def plot_density_grid(
@@ -349,6 +372,9 @@ def run_optimization_neural_topo(
     cloak_history: list[float] = []
     l2_history: list[float] = []
     bin_history: list[float] = []
+    vol_frac_history: list[float] = []
+    C_rel_err_history: list[float] = []
+    rho_rel_err_history: list[float] = []
 
     boundary_indices_jnp = jnp.array(boundary_indices)
 
@@ -389,6 +415,11 @@ def run_optimization_neural_topo(
         l2_history.append(L_l2)
         bin_history.append(L_bin)
 
+        mat_metrics = material_proximity_metrics(theta, reparam, beta=beta)
+        vol_frac_history.append(mat_metrics["vol_frac"])
+        C_rel_err_history.append(mat_metrics["C_rel_err"])
+        rho_rel_err_history.append(mat_metrics["rho_rel_err"])
+
         grad_norm = float(jnp.sqrt(sum(
             jnp.sum(l["W"]**2) + jnp.sum(l["b"]**2) for l in grads
         )))
@@ -397,6 +428,9 @@ def run_optimization_neural_topo(
             f"  cloak_pct = {np.sqrt(max(L_cloak, 0)) * 100:.2f}"
             f"  L2 = {L_l2:.4e}"
             f"  bin = {L_bin:.4e}"
+            f"  vf = {mat_metrics['vol_frac']:.3f}"
+            f"  C_err = {mat_metrics['C_rel_err']:.3f}"
+            f"  rho_err = {mat_metrics['rho_rel_err']:.3f}"
             f"  beta = {beta:.1f}"
             f"  lr = {cur_lr:.2e}"
             f"  |grad| = {grad_norm:.4e}"
@@ -404,7 +438,8 @@ def run_optimization_neural_topo(
 
         if step_callback is not None:
             params = reparam.decode(theta, beta=beta)
-            step_callback(step, loss_val_float, L_cloak, L_l2, L_bin, params)
+            step_callback(step, loss_val_float, L_cloak, L_l2, L_bin, params,
+                          mat_metrics)
 
         if step % plot_every == 0:
             if plot_callback is not None:
@@ -433,4 +468,7 @@ def run_optimization_neural_topo(
         cloak_history=cloak_history,
         l2_history=l2_history,
         bin_history=bin_history,
+        vol_frac_history=vol_frac_history,
+        C_rel_err_history=C_rel_err_history,
+        rho_rel_err_history=rho_rel_err_history,
     )

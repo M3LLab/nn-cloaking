@@ -72,14 +72,25 @@ def main(config_path: str = "configs/cell_based.yaml") -> None:
     # Open CSV for incremental writing
     loss_csv = out / "loss_history.csv"
     csv_file = open(loss_csv, "w")
-    csv_file.write("step,total,cloak,l2_reg,neighbor\n")
+    method = config.optimization.method
+    if method == "neural_topo":
+        csv_file.write("step,total,cloak,l2_reg,neighbor,vol_frac,C_rel_err,rho_rel_err\n")
+    else:
+        csv_file.write("step,total,cloak,l2_reg,neighbor\n")
     csv_file.flush()
 
     best_loss = float("inf")
 
-    def _log_step(step, total, cloak, l2, neighbor, params):
+    def _log_step(step, total, cloak, l2, neighbor, params, mat_metrics=None):
         nonlocal best_loss
-        csv_file.write(f"{step},{total:.8e},{cloak:.8e},{l2:.8e},{neighbor:.8e}\n")
+        if mat_metrics is not None:
+            csv_file.write(
+                f"{step},{total:.8e},{cloak:.8e},{l2:.8e},{neighbor:.8e},"
+                f"{mat_metrics['vol_frac']:.6f},{mat_metrics['C_rel_err']:.6f},"
+                f"{mat_metrics['rho_rel_err']:.6f}\n"
+            )
+        else:
+            csv_file.write(f"{step},{total:.8e},{cloak:.8e},{l2:.8e},{neighbor:.8e}\n")
         csv_file.flush()
         if total < best_loss:
             best_loss = total
@@ -89,7 +100,6 @@ def main(config_path: str = "configs/cell_based.yaml") -> None:
                      cell_rho=np.asarray(cell_rho))
             print(f"    ✓ New best loss {total:.4e} at step {step}, saved params")
 
-    method = config.optimization.method
     try:
         if method == "neural_topo":
             print(f"Using topology neural reparameterization (method={method})")
