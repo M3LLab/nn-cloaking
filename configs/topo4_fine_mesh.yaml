@@ -84,5 +84,6 @@ optimization:
     beta_start: 4.0
     beta_end: 4.0
     fourier_sigma: 100.0
+    init_mode: direct
 
 output_dir: output/topo4_fine_mesh

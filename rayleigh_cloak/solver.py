@@ -429,33 +429,7 @@ def solve_optimization_neural_topo(
     print(f"  Coarse: {coarse_decomp.n_cells} cells, "
           f"{coarse_decomp.n_cloak_cells} in cloak")
 
-    print("=== Step 5: Matching coarse cells to dataset ===")
-    dataset = load_dataset(topo_cfg.dataset_path)
-    print(f"  Dataset: {len(dataset.geometries)} entries")
-
-    # Compute target (λ, μ) per cell by symmetrizing the transformed C_eff
-    from rayleigh_cloak.materials import C_eff as compute_C_eff, rho_eff as compute_rho_eff
-    coarse_lam_mu = np.zeros((coarse_decomp.n_cells, 2))
-    coarse_rho = np.zeros(coarse_decomp.n_cells)
-    for i, center in enumerate(coarse_decomp.cell_centers):
-        if coarse_decomp.cloak_mask[i]:
-            x = jnp.array(center)
-            C_i = compute_C_eff(x, geometry, C0)
-            C_sym = symmetrize_stiffness(C_i)
-            coarse_lam_mu[i] = np.asarray(C_to_flat2(C_sym))
-            coarse_rho[i] = float(compute_rho_eff(x, geometry, params.rho0))
-        else:
-            coarse_lam_mu[i] = np.array([params.lam, params.mu])
-            coarse_rho[i] = params.rho0
-
-    matched_geoms, matched_idx = match_cells_to_dataset(
-        coarse_lam_mu, coarse_rho, coarse_decomp.cloak_mask,
-        dataset,
-        rho_weight=topo_cfg.rho_weight,
-    )
-    print(f"  Matched {len(matched_idx)} cloak cells to dataset entries")
-
-    print("=== Step 6: Building fine pixel grid ===")
+    print("=== Step 5: Building fine pixel grid ===")
     ppc = topo_cfg.pixel_per_cell
     n_fine_x = config.cells.n_x * ppc
     n_fine_y = config.cells.n_y * ppc
@@ -463,18 +437,71 @@ def solve_optimization_neural_topo(
     print(f"  Fine grid: {n_fine_x}×{n_fine_y} = {fine_decomp.n_cells} pixels, "
           f"{fine_decomp.n_cloak_cells} in cloak")
 
-    # Build pixel-level density targets from matched geometries
-    pixel_targets = build_pixel_targets(
-        matched_geoms, config.cells.n_x, config.cells.n_y,
-        ppc, coarse_decomp.cloak_mask,
-    )
-
-    print("=== Step 7: Setting up topology neural reparameterization ===")
-    # Cement Lamé parameters
+    # Cement Lamé parameters (needed for both init modes)
     E_c = topo_cfg.E_cement
     nu_c = topo_cfg.nu_micro
     lam_cement = E_c * nu_c / ((1 + nu_c) * (1 - 2 * nu_c))
     mu_cement = E_c / (2 * (1 + nu_c))
+
+    if topo_cfg.init_mode == "direct":
+        print("=== Step 6: Direct SIMP-inverted init from C_eff ===")
+        from rayleigh_cloak.materials import C_eff as compute_C_eff
+        simp_p = topo_cfg.simp_p
+        beta0 = topo_cfg.beta_start
+        eps = topo_cfg.density_eps
+        pixel_targets = np.ones(fine_decomp.n_cells, dtype=np.float32)
+        for i, center in enumerate(fine_decomp.cell_centers):
+            if fine_decomp.cloak_mask[i]:
+                x = jnp.array(center)
+                C_i = compute_C_eff(x, geometry, C0, symmetrize=True)
+                lam_t, mu_t = float(C_i[0, 0, 1, 1]), float(C_i[0, 1, 0, 1])
+                # Desired final density from SIMP inversion
+                rho_lam = (max(lam_t, 0) / lam_cement) ** (1.0 / simp_p)
+                rho_mu = (max(mu_t, 0) / mu_cement) ** (1.0 / simp_p)
+                rho_target = np.clip(0.5 * (rho_lam + rho_mu), eps, 1 - eps)
+                # Invert double sigmoid: sigmoid(beta*(density_soft-0.5))=rho_target
+                # → density_soft = logit(rho_target)/beta + 0.5
+                logit_rho = np.log(rho_target / (1.0 - rho_target))
+                density_soft = logit_rho / beta0 + 0.5
+                pixel_targets[i] = np.clip(density_soft, eps, 1 - eps)
+        cloak_densities = pixel_targets[fine_decomp.cloak_mask]
+        # Report the final densities that the FEM will see at step 0
+        from scipy.special import expit
+        actual = expit(beta0 * (cloak_densities - 0.5))
+        print(f"  Cloak init densities (after double sigmoid): "
+              f"mean={actual.mean():.3f}, min={actual.min():.3f}, max={actual.max():.3f}")
+    else:
+        print("=== Step 6: Dataset-matched init ===")
+        dataset = load_dataset(topo_cfg.dataset_path)
+        print(f"  Dataset: {len(dataset.geometries)} entries")
+
+        from rayleigh_cloak.materials import C_eff as compute_C_eff, rho_eff as compute_rho_eff
+        coarse_lam_mu = np.zeros((coarse_decomp.n_cells, 2))
+        coarse_rho = np.zeros(coarse_decomp.n_cells)
+        for i, center in enumerate(coarse_decomp.cell_centers):
+            if coarse_decomp.cloak_mask[i]:
+                x = jnp.array(center)
+                C_i = compute_C_eff(x, geometry, C0)
+                C_sym = symmetrize_stiffness(C_i)
+                coarse_lam_mu[i] = np.asarray(C_to_flat2(C_sym))
+                coarse_rho[i] = float(compute_rho_eff(x, geometry, params.rho0))
+            else:
+                coarse_lam_mu[i] = np.array([params.lam, params.mu])
+                coarse_rho[i] = params.rho0
+
+        matched_geoms, matched_idx = match_cells_to_dataset(
+            coarse_lam_mu, coarse_rho, coarse_decomp.cloak_mask,
+            dataset,
+            rho_weight=topo_cfg.rho_weight,
+        )
+        print(f"  Matched {len(matched_idx)} cloak cells to dataset entries")
+
+        pixel_targets = build_pixel_targets(
+            matched_geoms, config.cells.n_x, config.cells.n_y,
+            ppc, coarse_decomp.cloak_mask,
+        )
+
+    print("=== Step 7: Setting up topology neural reparameterization ===")
     C0_flat = jnp.array(C_to_flat2(C0))
 
     theta_init, reparam = make_neural_reparam_topo(
