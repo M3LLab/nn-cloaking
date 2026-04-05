@@ -83,6 +83,5 @@ optimization:
     beta_start: 2.0
     beta_end: 2.0
     fourier_sigma: 100.0
-    init_mode: direct
 
 output_dir: output/topo4_soft_simp

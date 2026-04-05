@@ -115,7 +115,6 @@ class TopoNeuralConfig(BaseModel):
     beta_start: float = 1.0       # Heaviside projection sharpness at start
     beta_end: float = 32.0        # Heaviside projection sharpness at end
     fourier_sigma: float = 0.0    # random Fourier bandwidth (0 = axis-aligned linspace)
-    init_mode: str = "dataset"    # "dataset" = match to HDF5 dataset, "direct" = SIMP-inverted C_eff
 
 
 class OptimizationConfig(BaseModel):
