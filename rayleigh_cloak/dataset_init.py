@@ -231,9 +231,10 @@ def pretrain_mlp(
     targets = target_densities  # (n_cloak_pixels,)
 
     def loss_fn(theta):
-        raw = mlp_forward(theta, cloak_features)  # (n_cloak_pixels, 1)
-        pred = jax.nn.sigmoid(raw[:, 0])            # (n_cloak_pixels,)
-        return jnp.mean((pred - targets) ** 2)
+        raw = mlp_forward(theta, cloak_features)  # (n_cloak_pixels, n_out)
+        pred = jax.nn.sigmoid(raw)                  # (n_cloak_pixels, n_out)
+        # All channels share the same density target at init
+        return jnp.mean((pred - targets[:, None]) ** 2)
 
     loss_and_grad = jax.jit(jax.value_and_grad(loss_fn))
 

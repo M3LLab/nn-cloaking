@@ -81,28 +81,37 @@ class NeuralReparamTopo:
     simp_p: float = 3.0
     n_C_params: int = 2
 
-    def _cloak_densities(self, theta: list[dict], beta: float = 1.0) -> jnp.ndarray:
-        """Compute densities for cloak pixels only. Shape: (n_cloak,)."""
+    def _cloak_channel_densities(
+        self, theta: list[dict], beta: float = 1.0,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        """Compute per-channel densities for cloak pixels.
+
+        Returns (d_lam, d_mu, d_rho), each shape (n_cloak,).
+        The same logit baseline is shared across channels; the MLP's
+        3-channel output provides independent corrections.
+        """
         cloak_features = self.cell_features[self.cloak_idx]       # (n_cloak, n_features)
         cloak_baseline = self.logit_baseline[self.cloak_idx]      # (n_cloak,)
-        raw = mlp_forward(theta, cloak_features)                  # (n_cloak, 1)
-        logit = cloak_baseline + self.output_scale * raw[:, 0]
-        density_soft = jax.nn.sigmoid(logit)
-        return jax.nn.sigmoid(beta * (density_soft - 0.5))
+        raw = mlp_forward(theta, cloak_features)                  # (n_cloak, 3)
+        logits = cloak_baseline[:, None] + self.output_scale * raw  # (n_cloak, 3)
+        soft = jax.nn.sigmoid(logits)
+        projected = jax.nn.sigmoid(beta * (soft - 0.5))
+        return projected[:, 0], projected[:, 1], projected[:, 2]
 
     def decode(self, theta: list[dict], beta: float = 1.0) -> tuple[jnp.ndarray, jnp.ndarray]:
         """Map MLP weights → (cell_C_flat, cell_rho).
 
-        Only evaluates the MLP on cloak pixels; non-cloak pixels get
-        background values directly.
+        Three independent density channels decouple lam, mu, rho:
+            lam = lam_cement * d_lam^p
+            mu  = mu_cement  * d_mu^p
+            rho = rho_cement * d_rho
+        Non-cloak pixels get background values directly.
         """
         n_pixels = self.cell_features.shape[0]
-        density_cloak = self._cloak_densities(theta, beta)  # (n_cloak,)
+        d_lam, d_mu, d_rho = self._cloak_channel_densities(theta, beta)
 
-        # SIMP: scale Lamé parameters by density^p
-        penalised = density_cloak ** self.simp_p
-        lam = self.lam_cement * penalised
-        mu = self.mu_cement * penalised
+        lam = self.lam_cement * d_lam ** self.simp_p
+        mu = self.mu_cement * d_mu ** self.simp_p
 
         # Scatter cloak values into full arrays with background defaults
         cell_C_flat = jnp.tile(self.C0_flat, (n_pixels, 1))         # (n_pixels, 2)
@@ -110,16 +119,16 @@ class NeuralReparamTopo:
         cell_C_flat = cell_C_flat.at[self.cloak_idx].set(cloak_C)
 
         cell_rho = jnp.full(n_pixels, self.rho0)                    # (n_pixels,)
-        cell_rho = cell_rho.at[self.cloak_idx].set(self.rho_cement * density_cloak)
+        cell_rho = cell_rho.at[self.cloak_idx].set(self.rho_cement * d_rho)
 
         return (cell_C_flat, cell_rho)
 
     def get_densities(self, theta: list[dict], beta: float = 1.0) -> jnp.ndarray:
-        """Pixel densities: cloak pixels from MLP, non-cloak = -1 (sentinel)."""
+        """Pixel densities (rho channel): cloak from MLP, non-cloak = -1."""
         n_pixels = self.cell_features.shape[0]
-        density_cloak = self._cloak_densities(theta, beta)
+        _, _, d_rho = self._cloak_channel_densities(theta, beta)
         out = jnp.full(n_pixels, -1.0)
-        return out.at[self.cloak_idx].set(density_cloak)
+        return out.at[self.cloak_idx].set(d_rho)
 
     def get_density_grid(self, theta: list[dict], beta: float = 1.0) -> np.ndarray:
         """Return densities as a 2D (n_y, n_x) array for visualisation.
@@ -171,7 +180,7 @@ def make_neural_reparam_topo(
     theta : MLP parameters (list of {W, b})
     reparam : NeuralReparamTopo instance with decode() method
     """
-    n_out = 1  # single density logit correction per pixel
+    n_out = 3  # independent density channels: lam, mu, rho
 
     # Normalise pixel centres to [0, 1]
     centers = jnp.array(cell_decomp.cell_centers)
@@ -234,9 +243,12 @@ def binarisation_penalty(
     reparam: NeuralReparamTopo,
     beta: float = 1.0,
 ) -> jnp.ndarray:
-    """SIMP binarisation penalty: 4*rho*(1-rho) averaged over cloak pixels."""
-    cloak_rho = reparam._cloak_densities(theta, beta=beta)
-    return jnp.mean(4.0 * cloak_rho * (1.0 - cloak_rho))
+    """SIMP binarisation penalty: 4*d*(1-d) averaged over all channels."""
+    d_lam, d_mu, d_rho = reparam._cloak_channel_densities(theta, beta=beta)
+    pen = (jnp.mean(4.0 * d_lam * (1.0 - d_lam))
+         + jnp.mean(4.0 * d_mu * (1.0 - d_mu))
+         + jnp.mean(4.0 * d_rho * (1.0 - d_rho)))
+    return pen / 3.0
 
 
 def material_proximity_metrics(
@@ -244,19 +256,31 @@ def material_proximity_metrics(
     reparam: NeuralReparamTopo,
     beta: float = 1.0,
 ) -> dict[str, float]:
-    """Compute relative error of cloak pixel materials from solid cement.
+    """Material metrics split by solid (d_rho > 0.5) and void pixels.
 
-    For cloak pixel with density d:
-      C_pixel = C_cement * d^p   →  C relative error = mean(|1 - d^p|)
-      rho_pixel = rho_cement * d →  rho relative error = mean(|1 - d|)
-
-    Returns dict with keys: vol_frac, C_rel_err, rho_rel_err.
+    Solid pixels: average relative error from cement for each channel.
+    Void pixels: average rho density (lower = closer to void).
     """
-    density = reparam._cloak_densities(theta, beta=beta)  # (n_cloak,)
-    vol_frac = float(jnp.mean(density))
-    C_rel_err = float(jnp.mean(jnp.abs(1.0 - density ** reparam.simp_p)))
-    rho_rel_err = float(jnp.mean(jnp.abs(1.0 - density)))
-    return {"vol_frac": vol_frac, "C_rel_err": C_rel_err, "rho_rel_err": rho_rel_err}
+    d_lam, d_mu, d_rho = reparam._cloak_channel_densities(theta, beta=beta)
+
+    solid = d_rho > 0.5
+    n_solid = jnp.sum(solid)
+    n_void = jnp.sum(~solid)
+
+    lam_err = jnp.sum(jnp.where(solid, jnp.abs(1.0 - d_lam ** reparam.simp_p), 0.0))
+    mu_err = jnp.sum(jnp.where(solid, jnp.abs(1.0 - d_mu ** reparam.simp_p), 0.0))
+    rho_err = jnp.sum(jnp.where(solid, jnp.abs(1.0 - d_rho), 0.0))
+
+    avg_rho_void = jnp.sum(jnp.where(~solid, d_rho, 0.0))
+
+    return {
+        "n_solid": int(n_solid),
+        "n_void": int(n_void),
+        "lam_rel_err": float(lam_err / jnp.maximum(n_solid, 1)),
+        "mu_rel_err": float(mu_err / jnp.maximum(n_solid, 1)),
+        "rho_rel_err": float(rho_err / jnp.maximum(n_solid, 1)),
+        "avg_rho_void": float(avg_rho_void / jnp.maximum(n_void, 1)),
+    }
 
 
 # ── Optimisation loop ───────────────────────────────────────────────
@@ -271,9 +295,10 @@ class TopoOptimizationResult:
     cloak_history: list[float] = field(default_factory=list)
     l2_history: list[float] = field(default_factory=list)
     bin_history: list[float] = field(default_factory=list)
-    vol_frac_history: list[float] = field(default_factory=list)
-    C_rel_err_history: list[float] = field(default_factory=list)
+    lam_rel_err_history: list[float] = field(default_factory=list)
+    mu_rel_err_history: list[float] = field(default_factory=list)
     rho_rel_err_history: list[float] = field(default_factory=list)
+    avg_rho_void_history: list[float] = field(default_factory=list)
 
 
 def plot_density_grid(
@@ -372,9 +397,10 @@ def run_optimization_neural_topo(
     cloak_history: list[float] = []
     l2_history: list[float] = []
     bin_history: list[float] = []
-    vol_frac_history: list[float] = []
-    C_rel_err_history: list[float] = []
+    lam_rel_err_history: list[float] = []
+    mu_rel_err_history: list[float] = []
     rho_rel_err_history: list[float] = []
+    avg_rho_void_history: list[float] = []
 
     boundary_indices_jnp = jnp.array(boundary_indices)
 
@@ -416,24 +442,28 @@ def run_optimization_neural_topo(
         bin_history.append(L_bin)
 
         mat_metrics = material_proximity_metrics(theta, reparam, beta=beta)
-        vol_frac_history.append(mat_metrics["vol_frac"])
-        C_rel_err_history.append(mat_metrics["C_rel_err"])
+        lam_rel_err_history.append(mat_metrics["lam_rel_err"])
+        mu_rel_err_history.append(mat_metrics["mu_rel_err"])
         rho_rel_err_history.append(mat_metrics["rho_rel_err"])
+        avg_rho_void_history.append(mat_metrics["avg_rho_void"])
 
         grad_norm = float(jnp.sqrt(sum(
             jnp.sum(l["W"]**2) + jnp.sum(l["b"]**2) for l in grads
         )))
+        n_s = mat_metrics["n_solid"]
+        n_v = mat_metrics["n_void"]
         print(
             f"  Step {step:4d} | total = {loss_val_float:.4e}"
             f"  cloak_pct = {np.sqrt(max(L_cloak, 0)) * 100:.2f}"
             f"  L2 = {L_l2:.4e}"
             f"  bin = {L_bin:.4e}"
-            f"  vf = {mat_metrics['vol_frac']:.3f}"
-            f"  C_err = {mat_metrics['C_rel_err']:.3f}"
-            f"  rho_err = {mat_metrics['rho_rel_err']:.3f}"
-            f"  beta = {beta:.1f}"
-            f"  lr = {cur_lr:.2e}"
-            f"  |grad| = {grad_norm:.4e}"
+            f"  solid({n_s}): lam_err={mat_metrics['lam_rel_err']:.3f}"
+            f" mu_err={mat_metrics['mu_rel_err']:.3f}"
+            f" rho_err={mat_metrics['rho_rel_err']:.3f}"
+            f"  void({n_v}): avg_rho={mat_metrics['avg_rho_void']:.3f}"
+            f"  beta={beta:.1f}"
+            f"  lr={cur_lr:.2e}"
+            f"  |grad|={grad_norm:.4e}"
         )
 
         if step_callback is not None:
@@ -468,7 +498,8 @@ def run_optimization_neural_topo(
         cloak_history=cloak_history,
         l2_history=l2_history,
         bin_history=bin_history,
-        vol_frac_history=vol_frac_history,
-        C_rel_err_history=C_rel_err_history,
+        lam_rel_err_history=lam_rel_err_history,
+        mu_rel_err_history=mu_rel_err_history,
         rho_rel_err_history=rho_rel_err_history,
+        avg_rho_void_history=avg_rho_void_history,
     )
