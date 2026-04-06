@@ -74,7 +74,10 @@ def main(config_path: str = "configs/cell_based.yaml") -> None:
     csv_file = open(loss_csv, "w")
     method = config.optimization.method
     if method == "neural_topo":
-        csv_file.write("step,total,cloak,l2_reg,neighbor,vol_frac,C_rel_err,rho_rel_err\n")
+        csv_file.write(
+            "step,total,cloak,l2_reg,neighbor,"
+            "n_solid,lam_rel_err,mu_rel_err,rho_rel_err,avg_rho_void\n"
+        )
     else:
         csv_file.write("step,total,cloak,l2_reg,neighbor\n")
     csv_file.flush()
@@ -86,8 +89,10 @@ def main(config_path: str = "configs/cell_based.yaml") -> None:
         if mat_metrics is not None:
             csv_file.write(
                 f"{step},{total:.8e},{cloak:.8e},{l2:.8e},{neighbor:.8e},"
-                f"{mat_metrics['vol_frac']:.6f},{mat_metrics['C_rel_err']:.6f},"
-                f"{mat_metrics['rho_rel_err']:.6f}\n"
+                f"{mat_metrics['n_solid']},{mat_metrics['lam_rel_err']:.6f},"
+                f"{mat_metrics['mu_rel_err']:.6f},"
+                f"{mat_metrics['rho_rel_err']:.6f},"
+                f"{mat_metrics['avg_rho_void']:.6f}\n"
             )
         else:
             csv_file.write(f"{step},{total:.8e},{cloak:.8e},{l2:.8e},{neighbor:.8e}\n")
