@@ -133,8 +133,7 @@ def main(config_path: str = "configs/continuous.yaml") -> None:
     _plot_re_displacement(cloak_result, output_dir)
 
     # --- Cloaking loss ---
-    loss = compute_cloaking_loss(
-        cloak_result, ref_result, geometry, tol=config.loss.tol)
+    loss = compute_cloaking_loss(cloak_result, ref_result, geometry)
 
     # --- Report ---
     mode = "cell-based" if cell_based else "continuous"

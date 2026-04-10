@@ -44,7 +44,6 @@ def compute_cloaking_loss(
     cloak_result,
     ref_result,
     geometry,
-    tol: float = 1e-3,
 ) -> CloakingLoss:
     """Compute cloaking distortion metrics.
 
@@ -58,8 +57,6 @@ def compute_cloaking_loss(
         shared full mesh.  Must have ``.u``.
     geometry:
         Cloak geometry object exposing ``in_cloak()`` / ``in_defect()``.
-    tol:
-        Spatial tolerance passed to the boundary/region index selectors.
     """
     params = cloak_result.params
     kept_nodes = cloak_result.kept_nodes
@@ -67,7 +64,7 @@ def compute_cloaking_loss(
 
     # All four physical boundaries
     bnd_idx = get_all_physical_boundary_indices(
-        pts, params.x_off, params.y_off, params.W, params.H, tol=tol,
+        pts, params.x_off, params.y_off, params.W, params.H,
     )
     u_ref_bnd = ref_result.u[kept_nodes[bnd_idx]]
     u_cloak_bnd = cloak_result.u[bnd_idx]
@@ -75,7 +72,7 @@ def compute_cloaking_loss(
 
     # Right physical boundary only
     x_right = params.x_off + params.W
-    right_idx = get_right_boundary_indices(pts, x_right, tol=tol)
+    right_idx = get_right_boundary_indices(pts, x_right)
     u_ref_right = ref_result.u[kept_nodes[right_idx]]
     u_cloak_right = cloak_result.u[right_idx]
     dist_right = _distortion_pct(u_cloak_right, u_ref_right)
@@ -84,7 +81,6 @@ def compute_cloaking_loss(
     outside_idx = get_outside_cloak_indices(
         pts, geometry,
         params.x_off, params.y_off, params.W, params.H,
-        tol=tol,
     )
     u_ref_outside = ref_result.u[kept_nodes[outside_idx]]
     u_cloak_outside = cloak_result.u[outside_idx]

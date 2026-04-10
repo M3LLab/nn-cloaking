@@ -84,7 +84,7 @@ class CellConfig(BaseModel):
 
 class LossConfig(BaseModel):
     """Settings for cloaking loss computation."""
-    tol: float = 1e-3   # spatial tolerance for boundary/region node selection
+    model_config = {"extra": "ignore"}
 
 
 class NeuralReparamConfig(BaseModel):
@@ -94,6 +94,7 @@ class NeuralReparamConfig(BaseModel):
     n_fourier: int = 32
     seed: int = 42
     output_scale: float = 0.1  # multiplier on MLP residual (controls max step size)
+    init_weights: str = ""     # path to .npz with saved MLP weights for warm-start
 
 
 class TopoNeuralConfig(BaseModel):

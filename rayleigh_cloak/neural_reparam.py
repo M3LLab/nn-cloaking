@@ -94,6 +94,32 @@ def random_fourier_features(
     return features, B
 
 
+# ── Weight I/O ──────────────────────────────────────────────────────
+
+
+def save_theta(theta: list[dict], path: str) -> None:
+    """Save MLP weights to an .npz file."""
+    arrays = {}
+    for i, layer in enumerate(theta):
+        arrays[f"W_{i}"] = np.asarray(layer["W"])
+        arrays[f"b_{i}"] = np.asarray(layer["b"])
+    arrays["n_layers"] = np.array(len(theta))
+    np.savez(path, **arrays)
+
+
+def load_theta(path: str) -> list[dict]:
+    """Load MLP weights from an .npz file."""
+    data = np.load(path)
+    n_layers = int(data["n_layers"])
+    theta = []
+    for i in range(n_layers):
+        theta.append({
+            "W": jnp.array(data[f"W_{i}"]),
+            "b": jnp.array(data[f"b_{i}"]),
+        })
+    return theta
+
+
 # ── Reparameterization ───────────────────────────────────────────────
 
 
@@ -199,6 +225,7 @@ def make_neural_reparam(
 class NeuralOptimizationResult:
     """Result of neural-reparameterized optimization."""
     theta: list[dict]
+    best_theta: list[dict]  # weights at lowest total loss
     params: tuple[jnp.ndarray, jnp.ndarray]  # final decoded (cell_C, cell_rho)
     loss_history: list[float] = field(default_factory=list)
     cloak_history: list[float] = field(default_factory=list)
@@ -214,6 +241,7 @@ def run_optimization_neural(
     theta_init: list[dict],
     n_iters: int = 100,
     lr: float = 1e-3,
+    lr_end: float | None = None,
     lambda_l2: float = 1e-4,
     plot_callback=None,
     plot_every: int = 1,
@@ -237,6 +265,9 @@ def run_optimization_neural(
     cloak_history: list[float] = []
     l2_history: list[float] = []
 
+    best_loss = float("inf")
+    best_theta = jax.tree.map(jnp.copy, theta)
+
     boundary_indices_jnp = jnp.array(boundary_indices)
 
     def loss_fn(theta):
@@ -259,6 +290,10 @@ def run_optimization_neural(
         return L_l2
 
     for step in range(n_iters):
+        # Learning rate schedule
+        t_frac = step / max(n_iters - 1, 1)
+        cur_lr = lr + (lr_end - lr) * t_frac if lr_end is not None else lr
+
         loss_val, grads = loss_and_grad(theta)
         loss_val_float = float(loss_val)
         loss_history.append(loss_val_float)
@@ -268,12 +303,20 @@ def run_optimization_neural(
         cloak_history.append(L_cloak)
         l2_history.append(L_l2)
 
+        grad_norm = float(jnp.sqrt(sum(
+            jnp.sum(l["W"]**2) + jnp.sum(l["b"]**2) for l in grads
+        )))
         print(
             f"  Step {step:4d} | total = {loss_val_float:.4e}"
-            f"  cloak = {L_cloak:.4e}"
-            f"  cloak_pct = {np.sqrt(max(L_cloak, 0)) * 100:.2e}"
-            f"  L2_reg = {L_l2:.4e}"
+            f"  cloak_pct = {np.sqrt(max(L_cloak, 0)) * 100:.2f}"
+            f"  L2 = {L_l2:.4e}"
+            f"  lr={cur_lr:.2e}"
+            f"  |grad|={grad_norm:.4e}"
         )
+
+        if loss_val_float < best_loss:
+            best_loss = loss_val_float
+            best_theta = jax.tree.map(jnp.copy, theta)
 
         if step_callback is not None:
             params = reparam.decode(theta)
@@ -284,7 +327,7 @@ def run_optimization_neural(
             sol_list = fwd_pred(params)
             plot_callback(step, np.asarray(sol_list[0]))
 
-        updates, opt_state = adam_update(grads, opt_state, lr=lr)
+        updates, opt_state = adam_update(grads, opt_state, lr=cur_lr)
         theta = jax.tree.map(lambda p, u: p + u, theta, updates)
 
     # Final state
@@ -296,6 +339,7 @@ def run_optimization_neural(
 
     return NeuralOptimizationResult(
         theta=theta,
+        best_theta=best_theta,
         params=final_params,
         loss_history=loss_history,
         cloak_history=cloak_history,

@@ -89,8 +89,7 @@ def evaluate(config_path: str, params_path: str) -> None:
         kept_nodes=kept_nodes,
     )
 
-    tol = config.loss.tol if hasattr(config, "loss") and hasattr(config.loss, "tol") else 1e-3
-    loss = compute_cloaking_loss(cloak_result, ref_result, geometry, tol=tol)
+    loss = compute_cloaking_loss(cloak_result, ref_result, geometry)
 
     print("\n" + "=" * 60)
     print("CLOAKING DISTORTION (optimized params)")

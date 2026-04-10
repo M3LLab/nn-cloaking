@@ -28,6 +28,7 @@ from rayleigh_cloak.optimize import (
 )
 from rayleigh_cloak.neural_reparam import (
     NeuralOptimizationResult,
+    load_theta,
     make_neural_reparam,
     run_optimization_neural,
 )
@@ -312,7 +313,7 @@ def solve_optimization_neural(
 
     x_right = params.x_off + params.W
     boundary_indices = get_right_boundary_indices(
-        np.asarray(cloak_mesh.points), x_right, tol=config.loss.tol)
+        np.asarray(cloak_mesh.points), x_right)
     print(f"  {len(boundary_indices)} boundary nodes for loss")
 
     u_ref_boundary = ref_result.u[kept_nodes[boundary_indices]]
@@ -328,6 +329,10 @@ def solve_optimization_neural(
         seed=neural_cfg.seed,
         output_scale=neural_cfg.output_scale,
     )
+    if neural_cfg.init_weights:
+        theta_init = load_theta(neural_cfg.init_weights)
+        print(f"  Loaded MLP weights from {neural_cfg.init_weights}")
+
     n_weights = sum(p["W"].size + p["b"].size for p in theta_init)
     print(f"  MLP: {neural_cfg.n_layers} layers, "
           f"{neural_cfg.hidden_size} hidden, "
@@ -509,7 +514,7 @@ def solve_optimization_neural_topo(
 
     x_right = params.x_off + params.W
     boundary_indices = get_right_boundary_indices(
-        np.asarray(cloak_mesh.points), x_right, tol=config.loss.tol)
+        np.asarray(cloak_mesh.points), x_right)
     print(f"  {len(boundary_indices)} boundary nodes for loss")
 
     u_ref_boundary = ref_result.u[kept_nodes[boundary_indices]]

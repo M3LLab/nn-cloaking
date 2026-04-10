@@ -148,7 +148,7 @@ class OptimizationResult:
 def get_right_boundary_indices(
     mesh_points: np.ndarray,
     x_right: float,
-    tol: float = 1e-3,
+    tol: float = 1e-10,
 ) -> np.ndarray:
     """Return node indices on the right physical boundary (excluding PML)."""
     return np.where(np.abs(mesh_points[:, 0] - x_right) < tol)[0]
@@ -181,7 +181,7 @@ def get_all_physical_boundary_indices(
     y_off: float,
     W: float,
     H: float,
-    tol: float = 1e-3,
+    tol: float = 1e-10,
 ) -> np.ndarray:
     """Return node indices on all four physical boundaries (excluding PML)."""
     pts = np.asarray(mesh_points)
@@ -199,7 +199,7 @@ def get_outside_cloak_indices(
     y_off: float,
     W: float,
     H: float,
-    tol: float = 1e-3,
+    tol: float = 1e-10,
 ) -> np.ndarray:
     """Return node indices in the physical domain but outside the cloak region.
 

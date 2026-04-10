@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from rayleigh_cloak import load_config
+from rayleigh_cloak.neural_reparam import save_theta
 from rayleigh_cloak.solver import (
     solve_optimization,
     solve_optimization_neural,
@@ -24,6 +25,56 @@ from rayleigh_cloak.solver import (
 )
 import logging
 logging.getLogger("jax_fem").setLevel(logging.WARNING)
+
+
+_FLAT_LABELS = {
+    2: [r"$\lambda$", r"$\mu$"],
+    4: [r"$C_{1111}$", r"$C_{2222}$", r"$C_{1212}$", r"$C_{1122}$"],
+    6: [r"$C_{1111}$", r"$C_{2222}$", r"$C_{1122}$",
+        r"$C_{1212}$", r"$C_{2121}$", r"$C_{1221}$"],
+    10: [r"$M_{11,11}$", r"$M_{11,22}$", r"$M_{11,12}$", r"$M_{11,21}$",
+         r"$M_{22,22}$", r"$M_{22,12}$", r"$M_{22,21}$",
+         r"$M_{12,12}$", r"$M_{12,21}$", r"$M_{21,21}$"],
+}
+
+
+def plot_profiles(cell_C_flat, cell_rho, n_x, n_y, n_C_params, save_path, step=None):
+    """Plot 2D heatmaps of material parameters (C components + rho)."""
+    C_flat_grid = cell_C_flat.reshape(n_x, n_y, n_C_params)
+    rho_grid = cell_rho.reshape(n_x, n_y)
+
+    n_plots = n_C_params + 1
+    ncols = min(n_plots, 3)
+    nrows = (n_plots + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5.5 * ncols, 5 * nrows))
+    axes = np.atleast_2d(axes).ravel()
+
+    flat_labels = _FLAT_LABELS.get(n_C_params,
+                                   [f"p{i}" for i in range(n_C_params)])
+
+    for k in range(n_C_params):
+        ax = axes[k]
+        im = ax.pcolormesh((C_flat_grid[:, :, k] / 1e9).T, shading='auto')
+        fig.colorbar(im, ax=ax, label="GPa")
+        ax.set_title(flat_labels[k])
+        ax.set_aspect('equal')
+
+    ax = axes[n_C_params]
+    im = ax.pcolormesh(rho_grid.T, shading='auto')
+    fig.colorbar(im, ax=ax, label="kg/m³")
+    ax.set_title(r"$\rho$")
+    ax.set_aspect('equal')
+
+    for i in range(n_plots, len(axes)):
+        axes[i].set_visible(False)
+
+    title = "Optimized material fields"
+    if step is not None:
+        title += f" — step {step}"
+    fig.suptitle(title, fontsize=14)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=100)
+    plt.close(fig)
 
 
 def plot_loss(result, save_path: str) -> None:
@@ -83,6 +134,13 @@ def main(config_path: str = "configs/cell_based.yaml") -> None:
     csv_file.flush()
 
     best_loss = float("inf")
+    plot_every = config.optimization.plot_every
+    profile_dir = out / "profiles"
+    if plot_every > 0:
+        profile_dir.mkdir(exist_ok=True)
+    n_x = config.cells.n_x
+    n_y = config.cells.n_y
+    n_C_params = config.cells.n_C_params
 
     def _log_step(step, total, cloak, l2, neighbor, params, mat_metrics=None):
         nonlocal best_loss
@@ -105,6 +163,15 @@ def main(config_path: str = "configs/cell_based.yaml") -> None:
                      cell_rho=np.asarray(cell_rho))
             print(f"    ✓ New best loss {total:.4e} at step {step}, saved params")
 
+        if plot_every > 0 and step % plot_every == 0:
+            cell_C_flat, cell_rho = params
+            plot_profiles(
+                np.asarray(cell_C_flat), np.asarray(cell_rho),
+                n_x, n_y, n_C_params,
+                save_path=str(profile_dir / f"profiles_step_{step:04d}.png"),
+                step=step,
+            )
+
     try:
         if method == "neural_topo":
             print(f"Using topology neural reparameterization (method={method})")
@@ -122,6 +189,11 @@ def main(config_path: str = "configs/cell_based.yaml") -> None:
     print(f"  Loss: {result.loss_history[0]:.4e} → {result.loss_history[-1]:.4e}")
     print(f"  Best loss: {best_loss:.4e} (saved to {out / 'optimized_params.npz'})")
     print(f"  Loss log: {loss_csv}")
+
+    if method == "neural" and hasattr(result, "best_theta"):
+        weights_path = str(out / "best_weights.npz")
+        save_theta(result.best_theta, weights_path)
+        print(f"  Best MLP weights: {weights_path}")
 
     # Plot loss curves
     plot_loss(result, save_path=str(out / "loss_curves.pdf"))

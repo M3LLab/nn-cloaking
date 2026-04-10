@@ -103,6 +103,56 @@ def generate_mesh(
     return Mesh(points, cells, ele_type=cfg.mesh.ele_type)
 
 
+def _embed_physical_boundary_points(geo, p: DerivedParams, h_elem: float) -> None:
+    """Embed points along the physical-domain boundaries into the mesh.
+
+    Places points at intervals of ``h_elem`` along the left, right, and
+    bottom physical boundaries.  Only strictly interior points are
+    embedded (endpoints that would coincide with existing domain edges
+    are skipped to avoid duplicate-point conflicts in gmsh).
+    """
+    x0, y0 = p.x_off, p.y_off
+    x1, y1 = p.x_off + p.W, p.y_off + p.H
+    eps = 1e-12  # guard against landing on domain edges
+
+    point_tags = []
+
+    def _is_on_domain_edge(x, y):
+        """True if (x,y) is on the outer domain rectangle."""
+        on_left = abs(x) < eps
+        on_right = abs(x - p.W_total) < eps
+        on_bottom = abs(y) < eps
+        on_top = abs(y - p.H_total) < eps
+        return on_left or on_right or on_bottom or on_top
+
+    # Right boundary: x = x1, y from y0 to y1
+    n_right = max(3, int(round((y1 - y0) / h_elem)) + 1)
+    for i in range(n_right):
+        y = y0 + i * (y1 - y0) / (n_right - 1)
+        if not _is_on_domain_edge(x1, y):
+            point_tags.append(geo.addPoint(x1, y, 0.0, h_elem))
+
+    # Left boundary: x = x0, y from y0 to y1
+    n_left = max(3, int(round((y1 - y0) / h_elem)) + 1)
+    for i in range(n_left):
+        y = y0 + i * (y1 - y0) / (n_left - 1)
+        if not _is_on_domain_edge(x0, y):
+            point_tags.append(geo.addPoint(x0, y, 0.0, h_elem))
+
+    # Bottom boundary: x from x0 to x1 (skip corners)
+    n_bottom = max(3, int(round((x1 - x0) / h_elem)) + 1)
+    for i in range(1, n_bottom - 1):
+        x = x0 + i * (x1 - x0) / (n_bottom - 1)
+        if not _is_on_domain_edge(x, y0):
+            point_tags.append(geo.addPoint(x, y0, 0.0, h_elem))
+
+    geo.synchronize()
+
+    surfaces = gmsh.model.getEntities(dim=2)
+    surf_tag = surfaces[0][1]
+    gmsh.model.mesh.embed(0, point_tags, 2, surf_tag)
+
+
 def generate_mesh_full(
     cfg: SimulationConfig,
     params: DerivedParams,
@@ -153,6 +203,12 @@ def generate_mesh_full(
         gmsh.model.mesh.field.setAsBackgroundMesh(f_final)
     else:
         gmsh.model.mesh.field.setAsBackgroundMesh(f_thresh_surf)
+
+    # ── embed physical-domain boundary lines ──
+    # The physical domain sits inside the PML region.  Embedding these
+    # four lines forces gmsh to place nodes exactly on them, so that
+    # boundary node selection needs no spatial tolerance.
+    _embed_physical_boundary_points(geo, p, h_elem)
 
     gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
     gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
