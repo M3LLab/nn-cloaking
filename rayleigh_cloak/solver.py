@@ -329,9 +329,12 @@ def solve_optimization_neural(
         seed=neural_cfg.seed,
         output_scale=neural_cfg.output_scale,
     )
+    loaded_opt_state = None
     if neural_cfg.init_weights:
-        theta_init = load_theta(neural_cfg.init_weights)
+        theta_init, loaded_opt_state = load_theta(neural_cfg.init_weights)
         print(f"  Loaded MLP weights from {neural_cfg.init_weights}")
+        if loaded_opt_state is not None:
+            print(f"  Restored Adam state (t={loaded_opt_state.t})")
 
     n_weights = sum(p["W"].size + p["b"].size for p in theta_init)
     print(f"  MLP: {neural_cfg.n_layers} layers, "
@@ -380,6 +383,7 @@ def solve_optimization_neural(
         plot_callback=_plot_step if opt_cfg.plot_every > 0 else None,
         plot_every=opt_cfg.plot_every,
         step_callback=step_callback,
+        opt_state_init=loaded_opt_state,
     )
     return result
 

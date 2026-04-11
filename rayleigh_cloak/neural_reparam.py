@@ -19,6 +19,7 @@ import numpy as np
 
 from rayleigh_cloak.cells import CellDecomposition
 from rayleigh_cloak.optimize import (
+    AdamState,
     adam_init,
     adam_update,
     cloaking_loss,
@@ -97,18 +98,33 @@ def random_fourier_features(
 # ── Weight I/O ──────────────────────────────────────────────────────
 
 
-def save_theta(theta: list[dict], path: str) -> None:
-    """Save MLP weights to an .npz file."""
+def save_theta(
+    theta: list[dict],
+    path: str,
+    opt_state: AdamState | None = None,
+) -> None:
+    """Save MLP weights (and optionally Adam state) to an .npz file."""
     arrays = {}
     for i, layer in enumerate(theta):
         arrays[f"W_{i}"] = np.asarray(layer["W"])
         arrays[f"b_{i}"] = np.asarray(layer["b"])
     arrays["n_layers"] = np.array(len(theta))
+    if opt_state is not None:
+        arrays["adam_t"] = np.array(opt_state.t)
+        for i, layer in enumerate(opt_state.m):
+            arrays[f"adam_m_W_{i}"] = np.asarray(layer["W"])
+            arrays[f"adam_m_b_{i}"] = np.asarray(layer["b"])
+        for i, layer in enumerate(opt_state.v):
+            arrays[f"adam_v_W_{i}"] = np.asarray(layer["W"])
+            arrays[f"adam_v_b_{i}"] = np.asarray(layer["b"])
     np.savez(path, **arrays)
 
 
-def load_theta(path: str) -> list[dict]:
-    """Load MLP weights from an .npz file."""
+def load_theta(path: str) -> tuple[list[dict], AdamState | None]:
+    """Load MLP weights (and Adam state if present) from an .npz file.
+
+    Returns (theta, opt_state) where opt_state is None if not saved.
+    """
     data = np.load(path)
     n_layers = int(data["n_layers"])
     theta = []
@@ -117,7 +133,22 @@ def load_theta(path: str) -> list[dict]:
             "W": jnp.array(data[f"W_{i}"]),
             "b": jnp.array(data[f"b_{i}"]),
         })
-    return theta
+    opt_state = None
+    if "adam_t" in data:
+        t = int(data["adam_t"])
+        m = []
+        v = []
+        for i in range(n_layers):
+            m.append({
+                "W": jnp.array(data[f"adam_m_W_{i}"]),
+                "b": jnp.array(data[f"adam_m_b_{i}"]),
+            })
+            v.append({
+                "W": jnp.array(data[f"adam_v_W_{i}"]),
+                "b": jnp.array(data[f"adam_v_b_{i}"]),
+            })
+        opt_state = AdamState(m=m, v=v, t=t)
+    return theta, opt_state
 
 
 # ── Reparameterization ───────────────────────────────────────────────
@@ -226,6 +257,7 @@ class NeuralOptimizationResult:
     """Result of neural-reparameterized optimization."""
     theta: list[dict]
     best_theta: list[dict]  # weights at lowest total loss
+    opt_state: AdamState     # final Adam state (for warm restart)
     params: tuple[jnp.ndarray, jnp.ndarray]  # final decoded (cell_C, cell_rho)
     loss_history: list[float] = field(default_factory=list)
     cloak_history: list[float] = field(default_factory=list)
@@ -246,6 +278,7 @@ def run_optimization_neural(
     plot_callback=None,
     plot_every: int = 1,
     step_callback=None,
+    opt_state_init: AdamState | None = None,
 ) -> NeuralOptimizationResult:
     """Run optimization over MLP weights (neural reparameterization).
 
@@ -256,11 +289,12 @@ def run_optimization_neural(
     params_init : (cell_C_flat, cell_rho) — original initial material values
     reparam : NeuralReparam with decode()
     theta_init : initial MLP weights
+    opt_state_init : if provided, resume Adam from this state (warm restart)
     step_callback : optional callable(step, total, cloak, l2, neighbor, params)
         Same signature as raw optimization for compatibility.
     """
     theta = jax.tree.map(jnp.copy, theta_init)
-    opt_state = adam_init(theta)
+    opt_state = opt_state_init if opt_state_init is not None else adam_init(theta)
     loss_history: list[float] = []
     cloak_history: list[float] = []
     l2_history: list[float] = []
@@ -340,6 +374,7 @@ def run_optimization_neural(
     return NeuralOptimizationResult(
         theta=theta,
         best_theta=best_theta,
+        opt_state=opt_state,
         params=final_params,
         loss_history=loss_history,
         cloak_history=cloak_history,

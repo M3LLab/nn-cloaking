@@ -192,8 +192,8 @@ def main(config_path: str = "configs/cell_based.yaml") -> None:
 
     if method == "neural" and hasattr(result, "best_theta"):
         weights_path = str(out / "best_weights.npz")
-        save_theta(result.best_theta, weights_path)
-        print(f"  Best MLP weights: {weights_path}")
+        save_theta(result.best_theta, weights_path, opt_state=result.opt_state)
+        print(f"  Best MLP weights + Adam state: {weights_path}")
 
     # Plot loss curves
     plot_loss(result, save_path=str(out / "loss_curves.pdf"))
