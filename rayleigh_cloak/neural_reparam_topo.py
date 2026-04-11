@@ -16,6 +16,7 @@ microstructure directly.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -368,6 +369,7 @@ def run_optimization_neural_topo(
     n_iters: int = 100,
     lr: float = 1e-3,
     lr_end: float | None = None,
+    lr_schedule: str = "linear",
     lambda_l2: float = 1e-4,
     lambda_bin: float = 0.01,
     beta_start: float = 1.0,
@@ -430,7 +432,12 @@ def run_optimization_neural_topo(
         beta = beta_start + (beta_end - beta_start) * step / max(n_iters - 1, 1)
         # Learning rate schedule
         t_frac = step / max(n_iters - 1, 1)
-        cur_lr = lr + (lr_end - lr) * t_frac if lr_end is not None else lr
+        if lr_end is None:
+            cur_lr = lr
+        elif lr_schedule == "cosine":
+            cur_lr = lr_end + 0.5 * (lr - lr_end) * (1 + math.cos(math.pi * t_frac))
+        else:
+            cur_lr = lr + (lr_end - lr) * t_frac
         loss_val, grads = loss_and_grad(theta, beta)
         loss_val_float = float(loss_val)
         loss_history.append(loss_val_float)

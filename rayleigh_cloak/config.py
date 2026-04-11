@@ -123,7 +123,8 @@ class OptimizationConfig(BaseModel):
     method: Literal["raw", "neural", "neural_topo"] = "raw"
     n_iters: int = 100
     lr: float = 1e-3
-    lr_end: float | None = None       # if set, linearly decay lr → lr_end
+    lr_end: float | None = None       # if set, decay lr → lr_end
+    lr_schedule: Literal["linear", "cosine"] = "linear"
     lambda_l2: float = 1e-4       # L2 regularization (drift from init)
     lambda_neighbor: float = 1e-3  # neighbor smoothness regularization
     plot_every: int = 1            # plot |Re(u)| every N steps (0 = disabled)
