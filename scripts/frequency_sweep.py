@@ -46,61 +46,15 @@ from jax_fem.solver import solver as jax_fem_solver
 from rayleigh_cloak import load_config
 from rayleigh_cloak.cells import CellDecomposition
 from rayleigh_cloak.config import DerivedParams
+from rayleigh_cloak.loss import transmitted_displacement_ratio
 from rayleigh_cloak.materials import C_iso, CellMaterial
 from rayleigh_cloak.mesh import extract_submesh, generate_mesh_full
+from rayleigh_cloak.optimize import get_top_surface_beyond_cloak_indices
 from rayleigh_cloak.problem import build_problem
 from rayleigh_cloak.solver import _create_geometry, solve_reference
 
 import logging
 logging.getLogger("jax_fem").setLevel(logging.WARNING)
-
-
-# ── metric helpers ────────────────────────────────────────────────────
-
-
-def _displacement_magnitude(u: np.ndarray) -> np.ndarray:
-    """Total displacement magnitude per node: sqrt(|ux|^2 + |uy|^2).
-
-    u has shape (n_nodes, 4) with DOFs [Re(ux), Re(uy), Im(ux), Im(uy)].
-    """
-    return np.sqrt(u[:, 0]**2 + u[:, 1]**2 + u[:, 2]**2 + u[:, 3]**2)
-
-
-def _get_top_surface_beyond_cloak(
-    mesh_points: np.ndarray,
-    y_top: float,
-    x_c: float,
-    c: float,
-    x_right: float,
-    tol: float = 1e-6,
-) -> np.ndarray:
-    """Node indices on the top surface downstream (right) of the cloak.
-
-    Selects nodes with y ~ y_top and x > x_c + c (beyond the cloak
-    half-width) and x <= x_right (within the physical domain, excluding PML).
-    """
-    pts = np.asarray(mesh_points)
-    on_top = np.abs(pts[:, 1] - y_top) < tol
-    beyond_cloak = pts[:, 0] > (x_c + c + tol)
-    within_phys = pts[:, 0] <= (x_right + tol)
-    return np.where(on_top & beyond_cloak & within_phys)[0]
-
-
-def transmitted_displacement_ratio(
-    u_case: np.ndarray,
-    u_ref: np.ndarray,
-    case_idx: np.ndarray,
-    ref_idx: np.ndarray,
-) -> float:
-    """<|u_case|> / <|u_ref|>  on the surface beyond the cloak.
-
-    This is the metric from Chatzopoulos et al. (2023), Fig 2(k).
-    """
-    mag_case = _displacement_magnitude(u_case[case_idx])
-    mag_ref = _displacement_magnitude(u_ref[ref_idx])
-    avg_case = float(np.mean(mag_case))
-    avg_ref = float(np.mean(mag_ref)) + 1e-30
-    return avg_case / avg_ref
 
 
 # ── CSV I/O ───────────────────────────────────────────────────────────
@@ -142,7 +96,7 @@ def plot_results(case_csvs: dict[str, Path], out_dir: Path) -> None:
         style = CASE_STYLES[case_name]
         ax.plot(f_vals, ratio_vals,
                 color=style["color"], ls=style["ls"], marker=style["marker"],
-                lw=1.5, markersize=4, label=style["label"])
+                lw=1.5, markersize=4, label=style["label"] if style["label"] != "Optimized" else "Optimized (right boundary)")
         f_max = max(f_max, f_vals.max())
         y_max = max(y_max, ratio_vals.max())
 
@@ -335,10 +289,11 @@ def main():
         full_mesh = generate_mesh_full(base_config, dp_base, geometry)
         cloak_mesh, kept_nodes = extract_submesh(full_mesh, geometry)
 
+        x_left_phys = dp_base.x_off
         x_right_phys = dp_base.x_off + dp_base.W
-        cloak_surface_idx = _get_top_surface_beyond_cloak(
-            cloak_mesh.points, dp_base.y_top, dp_base.x_c, dp_base.c,
-            x_right_phys,
+        cloak_surface_idx = get_top_surface_beyond_cloak_indices(
+            cloak_mesh.points, geometry,
+            dp_base.y_top, x_left_phys, x_right_phys,
         )
         ref_surface_idx = kept_nodes[cloak_surface_idx]
         print(f"Surface evaluation nodes beyond cloak: {len(cloak_surface_idx)}")

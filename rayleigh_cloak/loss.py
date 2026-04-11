@@ -3,18 +3,26 @@
 Provides :func:`compute_cloaking_loss` which measures how well the cloaked
 field matches the reference field on all physical boundaries and across the
 full physical domain outside the cloak.
+
+Also provides the transmitted displacement ratio metric from
+Chatzopoulos et al. (2023), Fig 2(k):  <|u_cloak|> / <|u_ref|>
+on the free surface beyond the cloaked region.  Available both as a
+NumPy evaluation metric (:func:`transmitted_displacement_ratio`) and a
+JAX-traceable loss (:func:`transmission_loss`).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+import jax.numpy as jnp
 import numpy as np
 
 from rayleigh_cloak.optimize import (
     get_outside_cloak_indices,
     get_right_boundary_indices,
     get_all_physical_boundary_indices,
+    get_top_surface_beyond_cloak_indices,
 )
 
 
@@ -38,6 +46,125 @@ def _relative_l2(u_cloak: np.ndarray, u_ref: np.ndarray) -> float:
 def _distortion_pct(u_cloak: np.ndarray, u_ref: np.ndarray) -> float:
     """100 * ||u_cloak - u_ref|| / ||u_ref||."""
     return 100.0 * np.sqrt(_relative_l2(u_cloak, u_ref))
+
+
+# ── Transmitted displacement ratio ──────────────────────────────────
+
+
+def displacement_magnitude(u: np.ndarray) -> np.ndarray:
+    """Total displacement magnitude per node: sqrt(|ux|^2 + |uy|^2).
+
+    Parameters
+    ----------
+    u : (n_nodes, 4) with DOFs [Re(ux), Re(uy), Im(ux), Im(uy)]
+    """
+    return np.sqrt(u[:, 0]**2 + u[:, 1]**2 + u[:, 2]**2 + u[:, 3]**2)
+
+
+def transmitted_displacement_ratio(
+    u_case: np.ndarray,
+    u_ref: np.ndarray,
+    case_surface_idx: np.ndarray,
+    ref_surface_idx: np.ndarray,
+) -> float:
+    """<|u_case|> / <|u_ref|> on the free surface beyond the cloak.
+
+    This is the metric from Chatzopoulos et al. (2023), Fig 2(k).
+    A perfect cloak yields a ratio of 1.0.
+
+    Parameters
+    ----------
+    u_case : (n_nodes_case, 4) solution on the case mesh (cloak/obstacle)
+    u_ref : (n_nodes_ref, 4) solution on the reference mesh
+    case_surface_idx : node indices into u_case for the evaluation surface
+    ref_surface_idx : corresponding node indices into u_ref
+    """
+    mag_case = displacement_magnitude(u_case[case_surface_idx])
+    mag_ref = displacement_magnitude(u_ref[ref_surface_idx])
+    return float(np.mean(mag_case)) / (float(np.mean(mag_ref)) + 1e-30)
+
+
+def transmission_loss(
+    u_cloak: jnp.ndarray,
+    u_ref_surface: jnp.ndarray,
+    surface_indices: jnp.ndarray,
+) -> jnp.ndarray:
+    """JAX-traceable loss: squared deviation of transmission ratio from 1.
+
+    Computes ``(ratio - 1)^2`` where ``ratio = <|u_cloak|> / <|u_ref|>``
+    on the surface nodes beyond the cloak.  Minimising drives the
+    transmitted wave amplitude toward the reference.
+
+    Parameters
+    ----------
+    u_cloak : (n_nodes, 4) cloaked solution
+    u_ref_surface : (n_surface, 4) reference displacement at surface nodes
+        (pre-indexed from the full reference solution)
+    surface_indices : node indices into u_cloak for the evaluation surface
+    """
+    u_s = u_cloak[surface_indices]
+    mag_cloak = jnp.sqrt(
+        u_s[:, 0]**2 + u_s[:, 1]**2 + u_s[:, 2]**2 + u_s[:, 3]**2
+    )
+    mag_ref = jnp.sqrt(
+        u_ref_surface[:, 0]**2 + u_ref_surface[:, 1]**2
+        + u_ref_surface[:, 2]**2 + u_ref_surface[:, 3]**2
+    )
+    ratio = jnp.mean(mag_cloak) / (jnp.mean(mag_ref) + 1e-30)
+    return (ratio - 1.0) ** 2
+
+
+# ── Loss resolution from config ────────────────────────────────────
+
+
+def resolve_loss_target(
+    loss_type: str,
+    mesh_points: np.ndarray,
+    geometry,
+    params,
+    kept_nodes: np.ndarray,
+    u_ref: np.ndarray,
+):
+    """Resolve a loss type string to node indices, reference data, and loss fn.
+
+    Returns
+    -------
+    indices : np.ndarray
+        Node indices into the cloak mesh for loss evaluation.
+    u_ref_at_nodes : jnp.ndarray
+        Reference displacement at those nodes (mapped via ``kept_nodes``).
+    loss_fn : callable (u_cloak, u_ref_nodes, indices) -> scalar
+        JAX-traceable loss function with the same signature as
+        ``cloaking_loss`` / ``transmission_loss``.
+    """
+    from rayleigh_cloak.optimize import cloaking_loss
+
+    pts = np.asarray(mesh_points)
+
+    if loss_type == "right_boundary":
+        x_right = params.x_off + params.W
+        indices = get_right_boundary_indices(pts, x_right)
+        loss_fn = cloaking_loss
+    elif loss_type == "top_surface":
+        indices = get_top_surface_beyond_cloak_indices(
+            pts, geometry, params.y_top,
+            params.x_off, params.x_off + params.W,
+        )
+        loss_fn = transmission_loss
+    elif loss_type == "outside_cloak":
+        indices = get_outside_cloak_indices(
+            pts, geometry,
+            params.x_off, params.y_off, params.W, params.H,
+        )
+        loss_fn = cloaking_loss
+    else:
+        raise ValueError(
+            f"Unknown loss type: {loss_type!r}. "
+            f"Choose from 'right_boundary', 'top_surface', 'outside_cloak'."
+        )
+
+    u_ref_at_nodes = jnp.array(u_ref[kept_nodes[indices]])
+    return indices, u_ref_at_nodes, loss_fn
 
 
 def compute_cloaking_loss(

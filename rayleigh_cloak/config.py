@@ -83,8 +83,18 @@ class CellConfig(BaseModel):
 
 
 class LossConfig(BaseModel):
-    """Settings for cloaking loss computation."""
+    """Settings for cloaking loss computation.
+
+    The ``type`` field selects which region and metric to evaluate:
+
+    - ``"right_boundary"`` (default): relative L2 on the right physical boundary.
+    - ``"top_surface"``: transmission ratio (ratio - 1)^2 on the free surface
+      beyond the cloak footprint.
+    - ``"outside_cloak"``: relative L2 over all physical-domain nodes outside
+      the cloak.
+    """
     model_config = {"extra": "ignore"}
+    type: Literal["right_boundary", "top_surface", "outside_cloak"] = "right_boundary"
 
 
 class NeuralReparamConfig(BaseModel):

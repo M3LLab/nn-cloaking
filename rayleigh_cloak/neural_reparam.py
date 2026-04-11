@@ -281,6 +281,7 @@ def run_optimization_neural(
     plot_every: int = 1,
     step_callback=None,
     opt_state_init: AdamState | None = None,
+    loss_fn=None,
 ) -> NeuralOptimizationResult:
     """Run optimization over MLP weights (neural reparameterization).
 
@@ -294,7 +295,13 @@ def run_optimization_neural(
     opt_state_init : if provided, resume Adam from this state (warm restart)
     step_callback : optional callable(step, total, cloak, l2, neighbor, params)
         Same signature as raw optimization for compatibility.
+    loss_fn : optional callable(u_cloak, u_ref, indices) -> scalar
+        JAX-traceable cloaking loss. Defaults to ``cloaking_loss`` (relative L2).
     """
+    if loss_fn is None:
+        loss_fn = cloaking_loss
+    _cloak_loss_fn = loss_fn
+
     theta = jax.tree.map(jnp.copy, theta_init)
     opt_state = opt_state_init if opt_state_init is not None else adam_init(theta)
     loss_history: list[float] = []
@@ -306,16 +313,16 @@ def run_optimization_neural(
 
     boundary_indices_jnp = jnp.array(boundary_indices)
 
-    def loss_fn(theta):
+    def _loss_fn(theta):
         params = reparam.decode(theta)
         sol_list = fwd_pred(params)
         u_cloak = sol_list[0]
-        L_cloak = cloaking_loss(u_cloak, u_ref_boundary, boundary_indices_jnp)
+        L_cloak = _cloak_loss_fn(u_cloak, u_ref_boundary, boundary_indices_jnp)
         L_l2 = l2_regularization(params, params_init)
         return L_cloak + lambda_l2 * L_l2, L_cloak
 
     loss_and_grad = jax.value_and_grad(
-        lambda t: loss_fn(t)[0],
+        lambda t: _loss_fn(t)[0],
         has_aux=False,
     )
 

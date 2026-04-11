@@ -32,6 +32,7 @@ from rayleigh_cloak.neural_reparam import (
     make_neural_reparam,
     run_optimization_neural,
 )
+from rayleigh_cloak.loss import resolve_loss_target
 from rayleigh_cloak.neural_reparam_topo import (
     TopoOptimizationResult,
     make_neural_reparam_topo,
@@ -205,15 +206,12 @@ def solve_optimization(config: SimulationConfig, step_callback=None) -> Optimiza
 
     problem = build_problem(cloak_mesh, config, params, geometry, cell_decomp)
 
-    # Right physical boundary on the submesh
-    x_right = params.x_off + params.W
-    boundary_indices = get_right_boundary_indices(
-        np.asarray(cloak_mesh.points), x_right)
-    print(f"  {len(boundary_indices)} boundary nodes for loss")
-
-    # Map boundary indices back to full-mesh numbering for reference solution
-    u_ref_boundary = ref_result.u[kept_nodes[boundary_indices]]
-    print(f"  Extracted u_ref at {len(boundary_indices)} boundary nodes")
+    # Loss target nodes from config
+    boundary_indices, u_ref_boundary, loss_fn = resolve_loss_target(
+        config.loss.type, np.asarray(cloak_mesh.points), geometry, params,
+        kept_nodes, ref_result.u,
+    )
+    print(f"  {len(boundary_indices)} loss nodes ({config.loss.type})")
 
     neighbor_pairs = cell_decomp.get_neighbor_pairs()
     print(f"  {len(neighbor_pairs)} neighbor pairs for regularisation")
@@ -269,6 +267,7 @@ def solve_optimization(config: SimulationConfig, step_callback=None) -> Optimiza
         plot_callback=_plot_step if opt_cfg.plot_every > 0 else None,
         plot_every=opt_cfg.plot_every,
         step_callback=step_callback,
+        loss_fn=loss_fn,
     )
     return result
 
@@ -311,12 +310,12 @@ def solve_optimization_neural(
 
     problem = build_problem(cloak_mesh, config, params, geometry, cell_decomp)
 
-    x_right = params.x_off + params.W
-    boundary_indices = get_right_boundary_indices(
-        np.asarray(cloak_mesh.points), x_right)
-    print(f"  {len(boundary_indices)} boundary nodes for loss")
-
-    u_ref_boundary = ref_result.u[kept_nodes[boundary_indices]]
+    # Loss target nodes from config
+    boundary_indices, u_ref_boundary, loss_fn = resolve_loss_target(
+        config.loss.type, np.asarray(cloak_mesh.points), geometry, params,
+        kept_nodes, ref_result.u,
+    )
+    print(f"  {len(boundary_indices)} loss nodes ({config.loss.type})")
 
     print("=== Step 5: Setting up neural reparameterization ===")
     params_init = cell_mat.get_initial_params()
@@ -385,6 +384,7 @@ def solve_optimization_neural(
         plot_every=opt_cfg.plot_every,
         step_callback=step_callback,
         opt_state_init=loaded_opt_state,
+        loss_fn=loss_fn,
     )
     return result
 
@@ -518,12 +518,12 @@ def solve_optimization_neural_topo(
         n_C_params_override=2,
     )
 
-    x_right = params.x_off + params.W
-    boundary_indices = get_right_boundary_indices(
-        np.asarray(cloak_mesh.points), x_right)
-    print(f"  {len(boundary_indices)} boundary nodes for loss")
-
-    u_ref_boundary = ref_result.u[kept_nodes[boundary_indices]]
+    # Loss target nodes from config
+    boundary_indices, u_ref_boundary, loss_fn = resolve_loss_target(
+        config.loss.type, np.asarray(cloak_mesh.points), geometry, params,
+        kept_nodes, ref_result.u,
+    )
+    print(f"  {len(boundary_indices)} loss nodes ({config.loss.type})")
 
     # Get initial material params from the decode (post-pretrain)
     params_init = reparam.decode(theta_init)
@@ -541,7 +541,6 @@ def solve_optimization_neural_topo(
         }
     }
     fwd_pred = ad_wrapper(problem, solver_opts, adjoint_opts)
-
 
     pts_x = np.asarray(cloak_mesh.points[:, 0])
     pts_y = np.asarray(cloak_mesh.points[:, 1])
@@ -590,6 +589,7 @@ def solve_optimization_neural_topo(
         density_callback=_plot_density if do_plot else None,
         plot_every=opt_cfg.plot_every,
         step_callback=step_callback,
+        loss_fn=loss_fn,
     )
     return result
 

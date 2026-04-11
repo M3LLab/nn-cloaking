@@ -378,6 +378,7 @@ def run_optimization_neural_topo(
     density_callback=None,
     plot_every: int = 1,
     step_callback=None,
+    loss_fn=None,
 ) -> TopoOptimizationResult:
     """Run optimisation over MLP weights (topology reparameterisation).
 
@@ -404,19 +405,23 @@ def run_optimization_neural_topo(
     rho_rel_err_history: list[float] = []
     avg_rho_void_history: list[float] = []
 
+    if loss_fn is None:
+        loss_fn = cloaking_loss
+    _cloak_loss_fn = loss_fn
+
     boundary_indices_jnp = jnp.array(boundary_indices)
 
-    def loss_fn(theta, beta):
+    def _loss_fn(theta, beta):
         params = reparam.decode(theta, beta=beta)
         sol_list = fwd_pred(params)
         u_cloak = sol_list[0]
-        L_cloak = cloaking_loss(u_cloak, u_ref_boundary, boundary_indices_jnp)
+        L_cloak = _cloak_loss_fn(u_cloak, u_ref_boundary, boundary_indices_jnp)
         L_l2 = l2_regularization(params, params_init)
         L_bin = binarisation_penalty(theta, reparam, beta=beta)
         return L_cloak + lambda_l2 * L_l2 + lambda_bin * L_bin, L_cloak
 
     loss_and_grad = jax.value_and_grad(
-        lambda t, b: loss_fn(t, b)[0],
+        lambda t, b: _loss_fn(t, b)[0],
         argnums=0,
         has_aux=False,
     )

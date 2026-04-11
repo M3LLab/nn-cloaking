@@ -89,12 +89,15 @@ def total_loss(
     neighbor_pairs: jnp.ndarray,
     lambda_l2: float,
     lambda_neighbor: float,
+    loss_fn=None,
 ) -> jnp.ndarray:
     """Combined cloaking + regularisation loss."""
+    if loss_fn is None:
+        loss_fn = cloaking_loss
     sol_list = fwd_pred(params)
     u_cloak = sol_list[0]
 
-    L_cloak = cloaking_loss(u_cloak, u_ref_boundary, boundary_indices)
+    L_cloak = loss_fn(u_cloak, u_ref_boundary, boundary_indices)
     L_l2 = l2_regularization(params, params_init)
     L_nb = neighbor_regularization(params, neighbor_pairs)
 
@@ -222,6 +225,61 @@ def get_outside_cloak_indices(
     return np.where(in_phys & ~in_c & ~in_d)[0]
 
 
+def get_top_surface_beyond_cloak_indices(
+    mesh_points: np.ndarray,
+    geometry,
+    y_top: float,
+    x_left: float,
+    x_right: float,
+    n_probe: int = 20,
+    tol: float = 1e-6,
+) -> np.ndarray:
+    """Return node indices on the top surface beyond the cloak footprint.
+
+    Geometry-agnostic: probes a vertical column below each surface node to
+    determine whether the cloak or defect lies beneath it.  Nodes above the
+    cloak footprint are excluded.
+
+    Parameters
+    ----------
+    mesh_points : (n_nodes, 2+) mesh coordinates
+    geometry : object satisfying the CloakGeometry protocol
+    y_top : y-coordinate of the free surface
+    x_left : left edge of the physical domain (exclude PML)
+    x_right : right edge of the physical domain (exclude PML)
+    n_probe : number of depth samples to check for cloak/defect membership
+    tol : positional tolerance for surface detection
+    """
+    import jax
+    import jax.numpy as jnp
+
+    pts = np.asarray(mesh_points)
+    on_top = np.abs(pts[:, 1] - y_top) < tol
+    in_phys_x = (pts[:, 0] >= x_left - tol) & (pts[:, 0] <= x_right + tol)
+    top_phys = np.where(on_top & in_phys_x)[0]
+
+    if len(top_phys) == 0:
+        return top_phys
+
+    # Probe a column of y-values below each surface node to detect cloak footprint
+    y_min = pts[:, 1].min()
+    y_probes = np.linspace(y_top - tol, y_min, n_probe)
+
+    above_cloak = np.zeros(len(top_phys), dtype=bool)
+    x_surface = pts[top_phys, 0]
+
+    for y_probe in y_probes:
+        probe_pts = jnp.column_stack([
+            jnp.array(x_surface),
+            jnp.full(len(top_phys), y_probe),
+        ])
+        in_c = np.asarray(jax.vmap(geometry.in_cloak)(probe_pts))
+        in_d = np.asarray(jax.vmap(geometry.in_defect)(probe_pts))
+        above_cloak |= (in_c | in_d)
+
+    return top_phys[~above_cloak]
+
+
 def cloaking_distortion_percent(
     u_cloak: jnp.ndarray,
     u_ref: jnp.ndarray,
@@ -294,6 +352,7 @@ def run_optimization(
     plot_callback=None,
     plot_every: int = 1,
     step_callback=None,
+    loss_fn=None,
 ) -> OptimizationResult:
     """Run the optimisation loop.
 
@@ -314,6 +373,8 @@ def run_optimization(
     step_callback : optional callable(step, total, cloak, l2, neighbor, params)
         Called after each step with loss components and current params.
         Useful for incremental CSV logging and checkpointing.
+    loss_fn : optional callable(u_cloak, u_ref, indices) -> scalar
+        JAX-traceable cloaking loss. Defaults to ``cloaking_loss`` (relative L2).
     """
     params = jax.tree.map(jnp.copy, params_init)
     opt_state = adam_init(params)
@@ -329,7 +390,7 @@ def run_optimization(
         lambda p: total_loss(
             p, params_init, fwd_pred, u_ref_boundary,
             boundary_indices_jnp, neighbor_pairs_jnp,
-            lambda_l2, lambda_neighbor,
+            lambda_l2, lambda_neighbor, loss_fn,
         )
     )
 
