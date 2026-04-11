@@ -8,6 +8,7 @@ Usage::
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -119,6 +120,9 @@ def main(config_path: str = "configs/cell_based.yaml") -> None:
 
     out = Path(config.output_dir)
     out.mkdir(exist_ok=True)
+
+    # Save a copy of the config file to output directory
+    shutil.copy2(config_path, out / "config.yaml")
 
     # Open CSV for incremental writing
     loss_csv = out / "loss_history.csv"

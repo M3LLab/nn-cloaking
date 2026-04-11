@@ -19,7 +19,9 @@ Usage::
 from __future__ import annotations
 
 import os
+import shutil
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -98,6 +100,9 @@ def main(config_path: str = "configs/continuous.yaml") -> None:
     geometry = _create_geometry(config, params)
     output_dir = config.output_dir
     os.makedirs(output_dir, exist_ok=True)
+
+    # Save a copy of the config file to output directory
+    shutil.copy2(config_path, Path(output_dir) / "config.yaml")
 
     # --- Reference (no cloak) ---
     if config.is_reference:
