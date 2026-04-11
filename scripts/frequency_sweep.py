@@ -96,7 +96,7 @@ def plot_results(case_csvs: dict[str, Path], out_dir: Path) -> None:
         style = CASE_STYLES[case_name]
         ax.plot(f_vals, ratio_vals,
                 color=style["color"], ls=style["ls"], marker=style["marker"],
-                lw=1.5, markersize=4, label=style["label"] if style["label"] != "Optimized" else "Optimized (right boundary)")
+                lw=1.5, markersize=4, label=style["label"] if style["label"] != "Optimized" else "Optimized (surface boundary)")
         f_max = max(f_max, f_vals.max())
         y_max = max(y_max, ratio_vals.max())
 

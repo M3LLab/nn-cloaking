@@ -27,10 +27,12 @@ from rayleigh_cloak.optimize import (
     run_optimization,
 )
 from rayleigh_cloak.neural_reparam import (
+    FreqTarget,
     NeuralOptimizationResult,
     load_theta,
     make_neural_reparam,
     run_optimization_neural,
+    run_optimization_neural_multifreq,
 )
 from rayleigh_cloak.loss import resolve_loss_target
 from rayleigh_cloak.neural_reparam_topo import (
@@ -272,6 +274,15 @@ def solve_optimization(config: SimulationConfig, step_callback=None) -> Optimiza
     return result
 
 
+def _make_config_at_fstar(base_config: SimulationConfig, f_star: float):
+    """Return a config copy with only f_star changed."""
+    return base_config.model_copy(
+        update={"domain": base_config.domain.model_copy(
+            update={"f_star": float(f_star)}
+        )}
+    )
+
+
 def solve_optimization_neural(
     config: SimulationConfig, step_callback=None,
 ) -> NeuralOptimizationResult:
@@ -280,7 +291,13 @@ def solve_optimization_neural(
     Same setup as ``solve_optimization`` (shared mesh, reference solve,
     submesh extraction, cell decomposition), but optimises MLP weights
     instead of raw cell parameters.
+
+    When ``config.loss.multi_freq.f_stars`` is non-empty, builds one FEM
+    problem per frequency and dispatches forward+adjoint solves in parallel
+    via a thread pool.
     """
+    import jax.numpy as jnp
+
     params = DerivedParams.from_config(config)
     geometry = _create_geometry(config, params)
 
@@ -289,15 +306,12 @@ def solve_optimization_neural(
     print(f"  Full mesh: {len(full_mesh.points)} nodes, "
           f"{len(full_mesh.cells)} elements")
 
-    print("=== Step 2: Solving reference problem (on full mesh) ===")
-    ref_result = solve_reference(config, mesh=full_mesh)
-
-    print("=== Step 3: Extracting submesh (removing defect elements) ===")
+    print("=== Step 2: Extracting submesh (removing defect elements) ===")
     cloak_mesh, kept_nodes = extract_submesh(full_mesh, geometry)
     print(f"  Submesh: {len(cloak_mesh.points)} nodes, "
           f"{len(cloak_mesh.cells)} elements")
 
-    print("=== Step 4: Setting up cell decomposition ===")
+    print("=== Step 3: Setting up cell decomposition ===")
     cell_decomp = CellDecomposition(geometry, config.cells.n_x, config.cells.n_y)
     C0 = C_iso(params.lam, params.mu)
     cell_mat = CellMaterial(
@@ -308,16 +322,7 @@ def solve_optimization_neural(
     print(f"  {cell_decomp.n_cells} total cells, "
           f"{cell_decomp.n_cloak_cells} in cloak")
 
-    problem = build_problem(cloak_mesh, config, params, geometry, cell_decomp)
-
-    # Loss target nodes from config
-    boundary_indices, u_ref_boundary, loss_fn = resolve_loss_target(
-        config.loss.type, np.asarray(cloak_mesh.points), geometry, params,
-        kept_nodes, ref_result.u,
-    )
-    print(f"  {len(boundary_indices)} loss nodes ({config.loss.type})")
-
-    print("=== Step 5: Setting up neural reparameterization ===")
+    print("=== Step 4: Setting up neural reparameterization ===")
     params_init = cell_mat.get_initial_params()
     neural_cfg = config.optimization.neural
     theta_init, reparam = make_neural_reparam(
@@ -352,7 +357,6 @@ def solve_optimization_neural(
             "pc_type": config.solver.pc_type,
         }
     }
-    fwd_pred = ad_wrapper(problem, solver_opts, adjoint_opts)
 
     pts_x = np.asarray(cloak_mesh.points[:, 0])
     pts_y = np.asarray(cloak_mesh.points[:, 1])
@@ -366,8 +370,84 @@ def solve_optimization_neural(
             title=f"|Re(u)| — step {step}",
         )
 
-    print("=== Step 6: Optimising (neural reparam) ===")
     opt_cfg = config.optimization
+    mf = config.loss.multi_freq
+
+    # ── Multi-frequency path ───────────────────────────────────────
+    if mf.f_stars:
+        f_stars = mf.f_stars
+        weights = mf.weights if mf.weights else [1.0] * len(f_stars)
+        if len(weights) != len(f_stars):
+            raise ValueError(
+                f"multi_freq.weights length ({len(weights)}) must match "
+                f"f_stars length ({len(f_stars)})"
+            )
+
+        print(f"=== Step 5: Building per-frequency problems ({len(f_stars)} frequencies) ===")
+        freq_targets: list[FreqTarget] = []
+        for f_star, weight in zip(f_stars, weights):
+            cfg_f = _make_config_at_fstar(config, f_star)
+            dp_f = DerivedParams.from_config(cfg_f)
+
+            # Reference solve at this frequency
+            print(f"  f*={f_star:.2f}: solving reference ...", end="", flush=True)
+            ref_f = solve_reference(cfg_f, mesh=full_mesh)
+
+            # Build problem at this frequency (sets class attrs, then creates instance)
+            problem_f = build_problem(cloak_mesh, cfg_f, dp_f, geometry, cell_decomp)
+            fwd_pred_f = ad_wrapper(problem_f, solver_opts, adjoint_opts)
+
+            # Loss target at this frequency
+            indices_f, u_ref_f, loss_fn_f = resolve_loss_target(
+                config.loss.type, np.asarray(cloak_mesh.points), geometry,
+                dp_f, kept_nodes, ref_f.u,
+            )
+            print(f" {len(indices_f)} loss nodes, weight={weight:.2f}")
+
+            freq_targets.append(FreqTarget(
+                f_star=f_star,
+                weight=weight,
+                fwd_pred=fwd_pred_f,
+                u_ref_boundary=u_ref_f,
+                boundary_indices=indices_f,
+                loss_fn=loss_fn_f,
+            ))
+
+        print("=== Step 6: Optimising (multi-freq neural reparam) ===")
+        result = run_optimization_neural_multifreq(
+            freq_targets=freq_targets,
+            params_init=params_init,
+            reparam=reparam,
+            theta_init=theta_init,
+            n_iters=opt_cfg.n_iters,
+            lr=opt_cfg.lr,
+            lr_end=opt_cfg.lr_end,
+            lr_schedule=opt_cfg.lr_schedule,
+            lambda_l2=opt_cfg.lambda_l2,
+            plot_callback=_plot_step if opt_cfg.plot_every > 0 else None,
+            plot_every=opt_cfg.plot_every,
+            step_callback=step_callback,
+            opt_state_init=loaded_opt_state,
+            max_workers=mf.max_workers,
+        )
+        return result
+
+    # ── Single-frequency path (original) ───────────────────────────
+    print("=== Step 5: Solving reference problem (on full mesh) ===")
+    ref_result = solve_reference(config, mesh=full_mesh)
+
+    problem = build_problem(cloak_mesh, config, params, geometry, cell_decomp)
+
+    # Loss target nodes from config
+    boundary_indices, u_ref_boundary, loss_fn = resolve_loss_target(
+        config.loss.type, np.asarray(cloak_mesh.points), geometry, params,
+        kept_nodes, ref_result.u,
+    )
+    print(f"  {len(boundary_indices)} loss nodes ({config.loss.type})")
+
+    fwd_pred = ad_wrapper(problem, solver_opts, adjoint_opts)
+
+    print("=== Step 6: Optimising (neural reparam) ===")
     result = run_optimization_neural(
         fwd_pred=fwd_pred,
         params_init=params_init,

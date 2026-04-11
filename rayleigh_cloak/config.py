@@ -82,6 +82,22 @@ class CellConfig(BaseModel):
     symmetrize_init: bool = False        # symmetrize C_eff (minor symmetry) when building init params
 
 
+class MultiFreqConfig(BaseModel):
+    """Multi-frequency optimization settings.
+
+    When ``f_stars`` is non-empty, the optimizer evaluates the cloaking loss
+    at each listed frequency and sums the weighted contributions.  Each
+    frequency gets its own FEM problem, reference solution, and
+    ``ad_wrapper``; the material parameters are shared across all of them.
+
+    Forward+adjoint solves at different frequencies are independent and
+    are dispatched in parallel via a thread pool (PETSc releases the GIL).
+    """
+    f_stars: list[float] = []
+    weights: list[float] = []      # per-frequency weight; [] → uniform
+    max_workers: int = 0           # thread-pool size; 0 → len(f_stars)
+
+
 class LossConfig(BaseModel):
     """Settings for cloaking loss computation.
 
@@ -95,6 +111,7 @@ class LossConfig(BaseModel):
     """
     model_config = {"extra": "ignore"}
     type: Literal["right_boundary", "top_surface", "outside_cloak"] = "right_boundary"
+    multi_freq: MultiFreqConfig = MultiFreqConfig()
 
 
 class NeuralReparamConfig(BaseModel):
