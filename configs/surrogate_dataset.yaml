@@ -32,8 +32,8 @@ absorbing:
 mesh:
   n_pml_x: 32
   n_pml_y: 32
-  nx_phys: 80
-  ny_phys: 50
+  nx_phys: 70
+  ny_phys: 40
   refinement_factor: 3
   ele_type: TRI3
 
