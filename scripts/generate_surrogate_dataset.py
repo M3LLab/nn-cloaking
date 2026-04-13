@@ -6,22 +6,26 @@ snapshots across a range of frequencies.  The geometry (mesh, cell grid,
 cloak_mask) is fixed from the base config; only material parameters and
 frequency vary.
 
+Default: ~10k samples (60% near-optimal from optimization trajectories).
+79 frequencies (0.1–4.0, step 0.05) × (76 opt snapshots + 25 random +
+25 smooth + 1 init) = ~10,033 samples.
+
 Usage::
 
-    # Default settings (16 frequencies, 30 random + 100-step opt each)
+    # Default settings (~10k samples, 79 frequencies, ~60% optimization)
     python scripts/generate_surrogate_dataset.py configs/surrogate_dataset.yaml
 
     # Custom frequency range and sample counts
     python scripts/generate_surrogate_dataset.py configs/surrogate_dataset.yaml \\
-        --f-min 0.5 --f-max 3.0 --f-step 0.5 \\
-        --n-random 20 --opt-iters 50 --opt-snapshot 5
+        --f-min 0.5 --f-max 3.0 --f-step 0.1 \\
+        --n-random 20 --opt-iters 50
 
     # Quick test run (2 frequencies, few samples)
     python scripts/generate_surrogate_dataset.py configs/surrogate_dataset.yaml \\
         --f-min 1.0 --f-max 2.0 --f-step 1.0 \\
-        --n-random 3 --opt-iters 20 --opt-snapshot 10
+        --n-random 3 --n-smooth 3 --opt-iters 10
 
-    # Only random samples (no optimization trajectory)
+    # Only random + smooth samples (no optimization trajectory)
     python scripts/generate_surrogate_dataset.py configs/surrogate_dataset.yaml \\
         --opt-iters 0
 """
@@ -59,34 +63,36 @@ def main():
         help="Output HDF5 path (default: {output_dir}/surrogate_dataset.h5)",
     )
 
-    # Frequency grid
-    parser.add_argument("--f-min", type=float, default=0.2,
-                        help="Minimum f_star (default: 0.2)")
+    # Frequency grid (default: 79 freqs, narrow 0.05 steps)
+    parser.add_argument("--f-min", type=float, default=0.1,
+                        help="Minimum f_star (default: 0.1)")
     parser.add_argument("--f-max", type=float, default=4.0,
                         help="Maximum f_star (default: 4.0)")
-    parser.add_argument("--f-step", type=float, default=0.2,
-                        help="f_star step size (default: 0.2)")
+    parser.add_argument("--f-step", type=float, default=0.05,
+                        help="f_star step size (default: 0.05)")
     parser.add_argument("--f-stars", type=float, nargs="+", default=None,
                         help="Explicit list of f_star values (overrides min/max/step)")
 
     # Random perturbation samples
-    parser.add_argument("--n-random", type=int, default=30,
-                        help="Random perturbation samples per frequency (default: 30)")
+    parser.add_argument("--n-random", type=int, default=25,
+                        help="Random perturbation samples per frequency (default: 25)")
     parser.add_argument("--noise-scales", type=float, nargs="+",
                         default=[0.01, 0.05, 0.1, 0.2, 0.5],
                         help="Relative noise magnitudes to cycle through")
 
     # Smooth random field samples
-    parser.add_argument("--n-smooth", type=int, default=20,
-                        help="Smooth random field samples per frequency (default: 20)")
+    parser.add_argument("--n-smooth", type=int, default=25,
+                        help="Smooth random field samples per frequency (default: 25)")
 
-    # Optimization trajectory
-    parser.add_argument("--opt-iters", type=int, default=100,
-                        help="Optimization steps per frequency (0 = skip, default: 100)")
+    # Optimization trajectory (default: 75 iters, snapshot every step → ~60% of dataset)
+    # Convergence happens fast, so more frequencies with fewer iters is preferred
+    # over fewer frequencies with many iters.
+    parser.add_argument("--opt-iters", type=int, default=75,
+                        help="Optimization steps per frequency (0 = skip, default: 75)")
     parser.add_argument("--opt-lr", type=float, default=0.005,
                         help="Learning rate for optimization (default: 0.005)")
-    parser.add_argument("--opt-snapshot", type=int, default=5,
-                        help="Snapshot every N optimization steps (default: 5)")
+    parser.add_argument("--opt-snapshot", type=int, default=1,
+                        help="Snapshot every N optimization steps (default: 1)")
     parser.add_argument("--opt-freqs", type=float, nargs="+", default=None,
                         help="Run optimization only at these frequencies (default: all)")
 

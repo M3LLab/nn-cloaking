@@ -71,6 +71,7 @@ class SourceConfig(BaseModel):
 class SolverConfig(BaseModel):
     ksp_type: str = "preonly"
     pc_type: str = "lu"
+    pc_factor_mat_solver_type: str = ""  # e.g. "mumps" or "mkl_pardiso" for parallel LU
 
 
 class CellConfig(BaseModel):

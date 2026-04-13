@@ -428,8 +428,9 @@ def generate_opt_trajectory(
 
         if step % snapshot_every == 0:
             _snapshot(step, params, loss_val)
-            print(f"  opt [{step}/{n_iters}] f*={fctx.f_star:.2f} "
-                  f"loss={float(loss_val):.4e} ({dt:.1f}s) [snapshot]")
+            if step % max(10, snapshot_every) == 0:
+                print(f"  opt [{step}/{n_iters}] f*={fctx.f_star:.2f} "
+                      f"loss={float(loss_val):.4e} ({dt:.1f}s) [snapshot]")
         elif step % 10 == 0:
             print(f"  opt [{step}/{n_iters}] f*={fctx.f_star:.2f} "
                   f"loss={float(loss_val):.4e} ({dt:.1f}s)")
@@ -511,25 +512,27 @@ def append_samples(path: Path, samples: list[dict]):
 class DatasetGenConfig:
     """Controls for the dataset generation run."""
 
-    # Frequency grid
+    # Frequency grid (default: 79 freqs with narrow 0.05 steps)
     f_stars: list[float] = field(default_factory=lambda: [
-        0.2, 0.5, 0.8, 1.0, 1.2, 1.5, 1.8, 2.0,
-        2.2, 2.5, 2.8, 3.0, 3.2, 3.5, 3.8, 4.0,
+        round(0.1 + i * 0.05, 4) for i in range(79)
     ])
 
     # Random perturbation samples per frequency
-    n_random_per_freq: int = 30
+    n_random_per_freq: int = 25
     noise_scales: list[float] = field(
         default_factory=lambda: [0.01, 0.05, 0.1, 0.2, 0.5]
     )
 
     # Spatially-smooth random fields per frequency
-    n_smooth_per_freq: int = 20
+    n_smooth_per_freq: int = 25
 
-    # Optimization trajectory per frequency
-    opt_n_iters: int = 100
+    # Optimization trajectory per frequency.
+    # Convergence happens within ~50-100 steps, so snapshot every step
+    # to capture the full trajectory.  More frequencies × fewer iters
+    # is preferred over fewer frequencies × many iters.
+    opt_n_iters: int = 75
     opt_lr: float = 0.005
-    opt_snapshot_every: int = 5
+    opt_snapshot_every: int = 1
 
     # Which frequencies to run optimization on (subset of f_stars for cost)
     opt_f_stars: list[float] | None = None  # None → use all f_stars

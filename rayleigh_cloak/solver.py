@@ -68,6 +68,17 @@ def _create_geometry(cfg: SimulationConfig, params: DerivedParams):
     raise ValueError(f"Unknown geometry_type: {cfg.geometry_type!r}")
 
 
+def _petsc_opts(config: SimulationConfig) -> dict:
+    """Build PETSc solver options dict from config."""
+    opts = {
+        "ksp_type": config.solver.ksp_type,
+        "pc_type": config.solver.pc_type,
+    }
+    if config.solver.pc_factor_mat_solver_type:
+        opts["pc_factor_mat_solver_type"] = config.solver.pc_factor_mat_solver_type
+    return {"petsc_solver": opts}
+
+
 def solve(
     config: SimulationConfig,
     mesh: Mesh | None = None,
@@ -93,12 +104,7 @@ def solve(
         mesh = generate_mesh(config, params, geometry)
     problem = build_problem(mesh, config, params, geometry)
 
-    solver_opts = {
-        "petsc_solver": {
-            "ksp_type": config.solver.ksp_type,
-            "pc_type": config.solver.pc_type,
-        }
-    }
+    solver_opts = _petsc_opts(config)
 
     print("Solving frequency-domain system with absorbing layers ...")
     sol_list = jax_fem_solver(problem, solver_options=solver_opts)
@@ -152,12 +158,7 @@ def solve_cell_based(config: SimulationConfig) -> SolutionResult:
     problem = build_problem(cloak_mesh, config, params, geometry, cell_decomp)
     problem.set_params(cell_mat.get_initial_params())
 
-    solver_opts = {
-        "petsc_solver": {
-            "ksp_type": config.solver.ksp_type,
-            "pc_type": config.solver.pc_type,
-        }
-    }
+    solver_opts = _petsc_opts(config)
     print("Solving cell-based system ...")
     sol_list = jax_fem_solver(problem, solver_options=solver_opts)
     u = np.asarray(sol_list[0])
@@ -219,19 +220,8 @@ def solve_optimization(config: SimulationConfig, step_callback=None) -> Optimiza
     print(f"  {len(neighbor_pairs)} neighbor pairs for regularisation")
 
     print("=== Step 5: Optimising ===")
-    solver_opts = {
-        "petsc_solver": {
-            "ksp_type": config.solver.ksp_type,
-            "pc_type": config.solver.pc_type,
-        }
-    }
-    adjoint_opts = {
-        "petsc_solver": {
-            "ksp_type": config.solver.ksp_type,
-            "pc_type": config.solver.pc_type,
-        }
-    }
-    fwd_pred = ad_wrapper(problem, solver_opts, adjoint_opts)
+    solver_opts = _petsc_opts(config)
+    fwd_pred = ad_wrapper(problem, solver_opts, solver_opts)
 
     # Load initial params: from file (warm-start) or from continuous push-forward
     if config.optimization.init_params:
@@ -345,18 +335,7 @@ def solve_optimization_neural(
           f"{neural_cfg.hidden_size} hidden, "
           f"{n_weights} total weights")
 
-    solver_opts = {
-        "petsc_solver": {
-            "ksp_type": config.solver.ksp_type,
-            "pc_type": config.solver.pc_type,
-        }
-    }
-    adjoint_opts = {
-        "petsc_solver": {
-            "ksp_type": config.solver.ksp_type,
-            "pc_type": config.solver.pc_type,
-        }
-    }
+    solver_opts = _petsc_opts(config)
 
     pts_x = np.asarray(cloak_mesh.points[:, 0])
     pts_y = np.asarray(cloak_mesh.points[:, 1])
@@ -395,7 +374,7 @@ def solve_optimization_neural(
 
             # Build problem at this frequency (sets class attrs, then creates instance)
             problem_f = build_problem(cloak_mesh, cfg_f, dp_f, geometry, cell_decomp)
-            fwd_pred_f = ad_wrapper(problem_f, solver_opts, adjoint_opts)
+            fwd_pred_f = ad_wrapper(problem_f, solver_opts, solver_opts)
 
             # Loss target at this frequency
             indices_f, u_ref_f, loss_fn_f = resolve_loss_target(
@@ -445,7 +424,7 @@ def solve_optimization_neural(
     )
     print(f"  {len(boundary_indices)} loss nodes ({config.loss.type})")
 
-    fwd_pred = ad_wrapper(problem, solver_opts, adjoint_opts)
+    fwd_pred = ad_wrapper(problem, solver_opts, solver_opts)
 
     print("=== Step 6: Optimising (neural reparam) ===")
     result = run_optimization_neural(
@@ -608,19 +587,8 @@ def solve_optimization_neural_topo(
     # Get initial material params from the decode (post-pretrain)
     params_init = reparam.decode(theta_init)
 
-    solver_opts = {
-        "petsc_solver": {
-            "ksp_type": config.solver.ksp_type,
-            "pc_type": config.solver.pc_type,
-        }
-    }
-    adjoint_opts = {
-        "petsc_solver": {
-            "ksp_type": config.solver.ksp_type,
-            "pc_type": config.solver.pc_type,
-        }
-    }
-    fwd_pred = ad_wrapper(problem, solver_opts, adjoint_opts)
+    solver_opts = _petsc_opts(config)
+    fwd_pred = ad_wrapper(problem, solver_opts, solver_opts)
 
     pts_x = np.asarray(cloak_mesh.points[:, 0])
     pts_y = np.asarray(cloak_mesh.points[:, 1])
@@ -943,12 +911,7 @@ def solve_nassar(config: SimulationConfig) -> NassarResult:
     problem.set_params(params_init)
 
     print("=== Step 5: Solving cloaked problem ===")
-    solver_opts = {
-        "petsc_solver": {
-            "ksp_type": config.solver.ksp_type,
-            "pc_type": config.solver.pc_type,
-        }
-    }
+    solver_opts = _petsc_opts(config)
     sol_list = jax_fem_solver(problem, solver_options=solver_opts)
     u_cloak = np.asarray(sol_list[0])
 
