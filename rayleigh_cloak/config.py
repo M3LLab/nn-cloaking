@@ -93,9 +93,19 @@ class MultiFreqConfig(BaseModel):
 
     Forward+adjoint solves at different frequencies are independent and
     are dispatched in parallel via a thread pool (PETSc releases the GIL).
+
+    Two strategies are available:
+    - ``"mean"`` (default): weighted sum of losses across all frequencies.
+    - ``"minimax"``: at each iteration, only the frequency with the largest
+      loss contributes to the gradient update.  Frequencies are specified
+      via ``f_min``/``f_max``/``f_step`` (or ``f_stars`` as fallback).
     """
+    strategy: Literal["mean", "minimax"] = "mean"
     f_stars: list[float] = []
-    weights: list[float] = []      # per-frequency weight; [] → uniform
+    weights: list[float] = []      # per-frequency weight; [] → uniform (mean only)
+    f_min: float | None = None     # minimax: start of frequency range
+    f_max: float | None = None     # minimax: end of frequency range
+    f_step: float | None = None    # minimax: frequency step
     max_workers: int = 0           # thread-pool size; 0 → len(f_stars)
 
 

@@ -578,3 +578,164 @@ def run_optimization_neural_multifreq(
         cloak_history=cloak_history,
         l2_history=l2_history,
     )
+
+
+# ── Minimax multi-frequency optimization ────────────────────────────
+
+
+def run_optimization_neural_multifreq_minimax(
+    freq_targets: list[FreqTarget],
+    params_init: tuple[jnp.ndarray, jnp.ndarray],
+    reparam: NeuralReparam,
+    theta_init: list[dict],
+    n_iters: int = 100,
+    lr: float = 1e-3,
+    lr_end: float | None = None,
+    lr_schedule: str = "linear",
+    lambda_l2: float = 1e-4,
+    plot_callback=None,
+    plot_every: int = 1,
+    step_callback=None,
+    opt_state_init: AdamState | None = None,
+    max_workers: int = 0,
+) -> NeuralOptimizationResult:
+    """Minimax multi-frequency optimization: only the worst-case frequency
+    contributes to each gradient step.
+
+    All frequencies are evaluated in parallel at each iteration. The
+    frequency with the largest loss is selected, and only its gradient
+    is used for the parameter update. This drives down the worst-case
+    error across the frequency band.
+
+    The loss dictionary (per-frequency losses) is tracked and printed
+    at each iteration for monitoring.
+    """
+    n_freq = len(freq_targets)
+    if max_workers <= 0:
+        max_workers = n_freq
+
+    theta = jax.tree.map(jnp.copy, theta_init)
+    opt_state = opt_state_init if opt_state_init is not None else adam_init(theta)
+    loss_history: list[float] = []
+    cloak_history: list[float] = []
+    l2_history: list[float] = []
+
+    best_loss = float("inf")
+    best_theta = jax.tree.map(jnp.copy, theta)
+
+    # Pre-convert indices to jnp once
+    for ft in freq_targets:
+        ft.boundary_indices = jnp.array(ft.boundary_indices)
+
+    # Build per-frequency value_and_grad closures (no weight scaling for minimax)
+    def _make_freq_loss_and_grad(ft: FreqTarget):
+        _fwd = ft.fwd_pred
+        _u_ref = ft.u_ref_boundary
+        _idx = ft.boundary_indices
+        _lfn = ft.loss_fn
+
+        def _loss(theta):
+            params = reparam.decode(theta)
+            sol_list = _fwd(params)
+            return _lfn(sol_list[0], _u_ref, _idx)
+
+        return jax.value_and_grad(_loss)
+
+    freq_loss_and_grads = [_make_freq_loss_and_grad(ft) for ft in freq_targets]
+
+    # Use the first frequency's fwd_pred for plotting
+    primary_fwd_pred = freq_targets[0].fwd_pred
+
+    f_star_str = ", ".join(f"{ft.f_star:.2f}" for ft in freq_targets)
+    print(f"  Minimax optimization: {n_freq} frequencies [{f_star_str}]")
+    print(f"  Thread pool: {max_workers} workers")
+
+    pool = ThreadPoolExecutor(max_workers=max_workers)
+
+    try:
+        for step in range(n_iters):
+            # Learning rate schedule
+            t_frac = step / max(n_iters - 1, 1)
+            if lr_end is None:
+                cur_lr = lr
+            elif lr_schedule == "cosine":
+                cur_lr = lr_end + 0.5 * (lr - lr_end) * (1 + math.cos(math.pi * t_frac))
+            else:
+                cur_lr = lr + (lr_end - lr) * t_frac
+
+            # Dispatch per-frequency loss+grad in parallel
+            futures = [pool.submit(fn, theta) for fn in freq_loss_and_grads]
+            results = [f.result() for f in futures]
+
+            # Collect per-frequency losses
+            per_freq_losses = [float(r[0]) for r in results]
+
+            # Select worst-case frequency
+            worst_idx = int(np.argmax(per_freq_losses))
+            worst_f_star = freq_targets[worst_idx].f_star
+            worst_loss = per_freq_losses[worst_idx]
+            worst_grad = results[worst_idx][1]
+
+            # L2 regularization
+            params = reparam.decode(theta)
+            L_l2 = float(l2_regularization(params, params_init))
+
+            l2_grad = jax.grad(
+                lambda t: lambda_l2 * l2_regularization(reparam.decode(t), params_init)
+            )(theta)
+            grads = jax.tree.map(lambda a, b: a + b, worst_grad, l2_grad)
+
+            loss_val_float = worst_loss + lambda_l2 * L_l2
+            loss_history.append(loss_val_float)
+            cloak_history.append(worst_loss)
+            l2_history.append(L_l2)
+
+            grad_norm = float(jnp.sqrt(sum(
+                jnp.sum(l["W"]**2) + jnp.sum(l["b"]**2) for l in grads
+            )))
+
+            # Per-frequency breakdown (* marks the worst)
+            per_freq_str = "  ".join(
+                f"f*={ft.f_star:.2f}:{pfl:.4e}{'*' if i == worst_idx else ''}"
+                for i, (ft, pfl) in enumerate(zip(freq_targets, per_freq_losses))
+            )
+            print(
+                f"  Step {step:4d} | worst = {worst_loss:.4e} (f*={worst_f_star:.2f})"
+                f"  L2 = {L_l2:.4e}"
+                f"  lr={cur_lr:.2e}"
+                f"  |grad|={grad_norm:.4e}"
+                f"\n    {per_freq_str}"
+            )
+
+            if loss_val_float < best_loss:
+                best_loss = loss_val_float
+                best_theta = jax.tree.map(jnp.copy, theta)
+
+            if step_callback is not None:
+                step_callback(step, loss_val_float, worst_loss, L_l2, 0.0, params)
+
+            if plot_callback is not None and step % plot_every == 0:
+                sol_list = primary_fwd_pred(params)
+                plot_callback(step, np.asarray(sol_list[0]))
+
+            updates, opt_state = adam_update(grads, opt_state, lr=cur_lr)
+            theta = jax.tree.map(lambda p, u: p + u, theta, updates)
+    finally:
+        pool.shutdown(wait=False)
+
+    # Final state
+    final_params = reparam.decode(theta)
+
+    if plot_callback is not None:
+        sol_list = primary_fwd_pred(final_params)
+        plot_callback(n_iters, np.asarray(sol_list[0]))
+
+    return NeuralOptimizationResult(
+        theta=theta,
+        best_theta=best_theta,
+        opt_state=opt_state,
+        params=final_params,
+        loss_history=loss_history,
+        cloak_history=cloak_history,
+        l2_history=l2_history,
+    )

@@ -33,6 +33,7 @@ from rayleigh_cloak.neural_reparam import (
     make_neural_reparam,
     run_optimization_neural,
     run_optimization_neural_multifreq,
+    run_optimization_neural_multifreq_minimax,
 )
 from rayleigh_cloak.loss import resolve_loss_target
 from rayleigh_cloak.neural_reparam_topo import (
@@ -353,7 +354,11 @@ def solve_optimization_neural(
     mf = config.loss.multi_freq
 
     # ── Multi-frequency path ───────────────────────────────────────
-    if mf.f_stars:
+    # Build frequency list from either f_stars or f_min/f_max/f_step
+    if mf.f_min is not None and mf.f_max is not None and mf.f_step is not None:
+        f_stars = list(np.arange(mf.f_min, mf.f_max + 0.5 * mf.f_step, mf.f_step))
+        weights = [1.0] * len(f_stars)
+    elif mf.f_stars:
         f_stars = mf.f_stars
         weights = mf.weights if mf.weights else [1.0] * len(f_stars)
         if len(weights) != len(f_stars):
@@ -361,7 +366,11 @@ def solve_optimization_neural(
                 f"multi_freq.weights length ({len(weights)}) must match "
                 f"f_stars length ({len(f_stars)})"
             )
+    else:
+        f_stars = []
+        weights = []
 
+    if f_stars:
         print(f"=== Step 5: Building per-frequency problems ({len(f_stars)} frequencies) ===")
         freq_targets: list[FreqTarget] = []
         for f_star, weight in zip(f_stars, weights):
@@ -392,23 +401,42 @@ def solve_optimization_neural(
                 loss_fn=loss_fn_f,
             ))
 
-        print("=== Step 6: Optimising (multi-freq neural reparam) ===")
-        result = run_optimization_neural_multifreq(
-            freq_targets=freq_targets,
-            params_init=params_init,
-            reparam=reparam,
-            theta_init=theta_init,
-            n_iters=opt_cfg.n_iters,
-            lr=opt_cfg.lr,
-            lr_end=opt_cfg.lr_end,
-            lr_schedule=opt_cfg.lr_schedule,
-            lambda_l2=opt_cfg.lambda_l2,
-            plot_callback=_plot_step if opt_cfg.plot_every > 0 else None,
-            plot_every=opt_cfg.plot_every,
-            step_callback=step_callback,
-            opt_state_init=loaded_opt_state,
-            max_workers=mf.max_workers,
-        )
+        if mf.strategy == "minimax":
+            print("=== Step 6: Optimising (multi-freq minimax neural reparam) ===")
+            result = run_optimization_neural_multifreq_minimax(
+                freq_targets=freq_targets,
+                params_init=params_init,
+                reparam=reparam,
+                theta_init=theta_init,
+                n_iters=opt_cfg.n_iters,
+                lr=opt_cfg.lr,
+                lr_end=opt_cfg.lr_end,
+                lr_schedule=opt_cfg.lr_schedule,
+                lambda_l2=opt_cfg.lambda_l2,
+                plot_callback=_plot_step if opt_cfg.plot_every > 0 else None,
+                plot_every=opt_cfg.plot_every,
+                step_callback=step_callback,
+                opt_state_init=loaded_opt_state,
+                max_workers=mf.max_workers,
+            )
+        else:
+            print("=== Step 6: Optimising (multi-freq neural reparam) ===")
+            result = run_optimization_neural_multifreq(
+                freq_targets=freq_targets,
+                params_init=params_init,
+                reparam=reparam,
+                theta_init=theta_init,
+                n_iters=opt_cfg.n_iters,
+                lr=opt_cfg.lr,
+                lr_end=opt_cfg.lr_end,
+                lr_schedule=opt_cfg.lr_schedule,
+                lambda_l2=opt_cfg.lambda_l2,
+                plot_callback=_plot_step if opt_cfg.plot_every > 0 else None,
+                plot_every=opt_cfg.plot_every,
+                step_callback=step_callback,
+                opt_state_init=loaded_opt_state,
+                max_workers=mf.max_workers,
+            )
         return result
 
     # ── Single-frequency path (original) ───────────────────────────
