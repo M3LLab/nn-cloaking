@@ -62,7 +62,7 @@ optimization:
   lr_schedule: cosine
   lambda_l2: 0.0
   lambda_neighbor: 0.0
-  plot_every: 100
+  plot_every: 50
   neural:
     hidden_size: 512
     n_layers: 6
