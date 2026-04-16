@@ -6,9 +6,12 @@ fixed; only cell material parameters and frequency vary.
 
 Two sampling strategies:
   1. **Random**: perturb the push-forward initialisation with controlled noise.
-  2. **Optimized trajectory**: run short optimisation (~50-100 steps) and
-     snapshot the parameters at regular intervals.  These lie near local
-     minima and are the most informative samples.
+  2. **Neural optimization trajectory**: run a neural-reparameterized
+     optimisation (MLP maps cell coords → material params) and snapshot the
+     *decoded* cell parameters at regular intervals.  These lie near local
+     minima and are the most informative samples.  The neural method
+     converges reliably (unlike direct cell-based Adam which has near-zero
+     gradients and produces flat trajectories).
 
 Output: HDF5 file with datasets:
   - cell_C_flat   (N, n_cells, n_C_params)   stiffness params per cell
@@ -37,6 +40,7 @@ from rayleigh_cloak.config import DerivedParams, SimulationConfig
 from rayleigh_cloak.loss import resolve_loss_target, transmission_loss
 from rayleigh_cloak.materials import C_iso, CellMaterial
 from rayleigh_cloak.mesh import extract_submesh, generate_mesh_full
+from rayleigh_cloak.neural_reparam import make_neural_reparam, run_optimization_neural
 from rayleigh_cloak.optimize import (
     adam_init,
     adam_update,
@@ -379,72 +383,150 @@ def generate_smooth_random_samples(
 
 
 # ---------------------------------------------------------------------------
-# Optimization trajectory sampling
+# Neural optimization trajectory sampling
 # ---------------------------------------------------------------------------
 
 
-def generate_opt_trajectory(
+def generate_opt_trajectory_neural(
     ctx: FixedGeometryContext,
     fctx: FreqContext,
-    n_iters: int = 100,
+    n_iters: int = 200,
     lr: float = 0.005,
-    snapshot_every: int = 10,
-) -> list[dict]:
-    """Run short optimisation and snapshot params at regular intervals.
+    lr_end: float = 1e-6,
+    lr_schedule: str = "cosine",
+    lambda_l2: float = 0.0,
+    snapshot_every: int = 5,
+    hidden_size: int = 512,
+    n_layers: int = 6,
+    n_fourier: int = 64,
+    seed: int = 42,
+    output_scale: float = 0.1,
+    theta_init: list | None = None,
+    patience: int = 30,
+    patience_min_delta: float = 1e-3,
+) -> tuple[list[dict], list]:
+    """Run neural-reparameterized optimisation and snapshot decoded cell params.
 
-    Returns one sample per snapshot step (including step 0 = init).
+    An MLP maps cell-centre coordinates → material corrections on top of the
+    push-forward initialisation.  Gradients flow through the FEM adjoint and
+    then back through the network via JAX autodiff.  This converges reliably
+    (several orders of magnitude per 100 steps), unlike direct cell-based
+    Adam which produces effectively flat trajectories.
+
+    Early stopping: if the best loss seen so far does not improve by at least
+    ``patience_min_delta`` (relative) over ``patience`` consecutive steps,
+    optimisation stops early.  This is frequency-agnostic — easy frequencies
+    stop quickly, hard ones run longer.
+
+    Parameters
+    ----------
+    theta_init : optional MLP weights for warm-starting from a previous
+        frequency.  If None, weights are re-initialised from scratch.
+    patience : number of consecutive non-improving steps before stopping.
+        Set to 0 to disable early stopping.
+    patience_min_delta : minimum relative improvement in best loss required
+        to reset the patience counter.  E.g. 1e-3 means 0.1% improvement.
+
+    Returns
+    -------
+    samples : list of dicts with decoded cell params + loss at each snapshot
+    final_theta : MLP weights after the last update (for warm-starting the
+        next frequency)
     """
-    C_init, rho_init = ctx.params_init
-    params = jax.tree.map(jnp.copy, (C_init, rho_init))
-    opt_state = adam_init(params)
+    import math
 
-    neighbor_pairs = jnp.array(ctx.cell_decomp.get_neighbor_pairs())
-    boundary_indices = jnp.array(fctx.surface_indices)
-
-    loss_and_grad = jax.value_and_grad(
-        lambda p: total_loss(
-            p, (C_init, rho_init), fctx.fwd_pred, fctx.u_ref_surface,
-            boundary_indices, neighbor_pairs,
-            lambda_l2=0.0, lambda_neighbor=0.0, loss_fn=fctx.loss_fn,
-        )
+    theta, reparam = make_neural_reparam(
+        ctx.cell_decomp,
+        ctx.params_init,
+        hidden_size=hidden_size,
+        n_layers=n_layers,
+        n_fourier=n_fourier,
+        seed=seed,
+        output_scale=output_scale,
     )
+    if theta_init is not None:
+        theta = jax.tree.map(jnp.copy, theta_init)
+
+    opt_state = adam_init(theta)
+    boundary_indices_jnp = jnp.array(fctx.surface_indices)
+
+    def _loss_fn(theta_):
+        params = reparam.decode(theta_)
+        sol_list = fctx.fwd_pred(params)
+        u_cloak = sol_list[0]
+        L_cloak = fctx.loss_fn(u_cloak, fctx.u_ref_surface, boundary_indices_jnp)
+        if lambda_l2 > 0.0:
+            from rayleigh_cloak.optimize import l2_regularization
+            L_cloak = L_cloak + lambda_l2 * l2_regularization(params, ctx.params_init)
+        return L_cloak
+
+    loss_and_grad = jax.value_and_grad(_loss_fn)
 
     samples = []
+    best_loss = float("inf")
+    no_improve_count = 0
 
-    def _snapshot(step, params, loss_val):
+    def _snapshot(step, params, cloak_loss):
         cell_C, cell_rho = params
         samples.append({
             "cell_C_flat": np.asarray(cell_C),
             "cell_rho": np.asarray(cell_rho),
             "f_star": fctx.f_star,
-            "loss": float(loss_val),
+            "loss": float(cloak_loss),
             "sample_type": f"opt_step_{step:04d}",
         })
 
     for step in range(n_iters):
+        # Learning rate schedule
+        t_frac = step / max(n_iters - 1, 1)
+        if lr_schedule == "cosine":
+            cur_lr = lr_end + 0.5 * (lr - lr_end) * (1.0 + math.cos(math.pi * t_frac))
+        elif lr_schedule == "linear":
+            cur_lr = lr + (lr_end - lr) * t_frac
+        else:
+            cur_lr = lr
+
         t0 = time.time()
-        loss_val, grads = loss_and_grad(params)
+        loss_val, grads = loss_and_grad(theta)
         dt = time.time() - t0
 
+        cloak_loss = float(loss_val)
+        params = reparam.decode(theta)
+
         if step % snapshot_every == 0:
-            _snapshot(step, params, loss_val)
+            _snapshot(step, params, cloak_loss)
             if step % max(10, snapshot_every) == 0:
-                print(f"  opt [{step}/{n_iters}] f*={fctx.f_star:.2f} "
-                      f"loss={float(loss_val):.4e} ({dt:.1f}s) [snapshot]")
-        elif step % 10 == 0:
-            print(f"  opt [{step}/{n_iters}] f*={fctx.f_star:.2f} "
-                  f"loss={float(loss_val):.4e} ({dt:.1f}s)")
+                print(f"  neural_opt [{step}/{n_iters}] f*={fctx.f_star:.2f} "
+                      f"loss={cloak_loss:.4e} lr={cur_lr:.2e} ({dt:.1f}s) [snapshot]")
 
-        updates, opt_state = adam_update(grads, opt_state, lr=lr)
-        params = jax.tree.map(lambda p, u: p + u, params, updates)
+        # Early stopping check
+        if patience > 0:
+            if cloak_loss < best_loss * (1.0 - patience_min_delta):
+                best_loss = cloak_loss
+                no_improve_count = 0
+            else:
+                no_improve_count += 1
+            if no_improve_count >= patience:
+                print(f"  neural_opt [early stop at {step}] f*={fctx.f_star:.2f} "
+                      f"loss={cloak_loss:.4e} (no >{patience_min_delta*100:.1f}% "
+                      f"improvement in {patience} steps)")
+                updates, opt_state = adam_update(grads, opt_state, lr=cur_lr)
+                theta = jax.tree.map(lambda p, u: p + u, theta, updates)
+                break
+        else:
+            best_loss = min(best_loss, cloak_loss)
 
-    # Final snapshot
-    loss_val = loss_and_grad(params)[0]
-    _snapshot(n_iters, params, loss_val)
-    print(f"  opt [{n_iters}/{n_iters}] f*={fctx.f_star:.2f} "
-          f"loss={float(loss_val):.4e} [final snapshot]")
+        updates, opt_state = adam_update(grads, opt_state, lr=cur_lr)
+        theta = jax.tree.map(lambda p, u: p + u, theta, updates)
 
-    return samples
+    # Final snapshot after last update
+    final_params = reparam.decode(theta)
+    final_loss = evaluate_loss(fctx, final_params)
+    _snapshot(step + 1, final_params, final_loss)
+    print(f"  neural_opt [done at step {step+1}] f*={fctx.f_star:.2f} "
+          f"final_loss={final_loss:.4e}")
+
+    return samples, theta
 
 
 # ---------------------------------------------------------------------------
@@ -526,13 +608,34 @@ class DatasetGenConfig:
     # Spatially-smooth random fields per frequency
     n_smooth_per_freq: int = 25
 
-    # Optimization trajectory per frequency.
-    # Convergence happens within ~50-100 steps, so snapshot every step
-    # to capture the full trajectory.  More frequencies × fewer iters
-    # is preferred over fewer frequencies × many iters.
-    opt_n_iters: int = 75
+    # Neural optimization trajectory per frequency.
+    # The neural reparameterization (MLP maps cell coords → material
+    # corrections) converges reliably — direct cell-based Adam produces
+    # essentially flat trajectories due to very small per-cell gradients.
+    opt_n_iters: int = 200
     opt_lr: float = 0.005
-    opt_snapshot_every: int = 1
+    opt_lr_end: float = 1e-6
+    opt_lr_schedule: str = "cosine"
+    opt_lambda_l2: float = 0.0
+    opt_snapshot_every: int = 5
+
+    # MLP architecture (should match the configs used in actual runs)
+    opt_neural_hidden_size: int = 512
+    opt_neural_n_layers: int = 6
+    opt_neural_n_fourier: int = 64
+    opt_neural_seed: int = 42
+    opt_neural_output_scale: float = 0.1
+
+    # Warm-start: pass the final MLP weights from frequency f as the
+    # initialisation for f+1.  Speeds up convergence at each frequency
+    # but produces correlated trajectories (less diverse samples).
+    opt_warm_start: bool = False
+
+    # Early stopping: halt when best loss hasn't improved by
+    # opt_patience_min_delta (relative) in opt_patience consecutive steps.
+    # Set opt_patience=0 to disable.
+    opt_patience: int = 30
+    opt_patience_min_delta: float = 4e-4
 
     # Which frequencies to run optimization on (subset of f_stars for cost)
     opt_f_stars: list[float] | None = None  # None → use all f_stars
@@ -575,10 +678,13 @@ def run_dataset_generation(
     # (loss=0 is not meaningful; we'll evaluate it properly)
 
     opt_freqs = set(gen_config.opt_f_stars or gen_config.f_stars)
+    # Keep opt_freqs in the same order as f_stars for warm-start to work
+    opt_freqs_ordered = [f for f in gen_config.f_stars if f in opt_freqs]
 
     total_random = len(gen_config.f_stars) * gen_config.n_random_per_freq
     total_smooth = len(gen_config.f_stars) * gen_config.n_smooth_per_freq
-    total_opt = len(opt_freqs) * (gen_config.opt_n_iters // gen_config.opt_snapshot_every + 1)
+    snapshots_per_freq = gen_config.opt_n_iters // gen_config.opt_snapshot_every + 1
+    total_opt = len(opt_freqs) * snapshots_per_freq
     print(f"\n=== Dataset generation plan ===")
     print(f"  Frequencies: {len(gen_config.f_stars)} "
           f"({gen_config.f_stars[0]:.1f} to {gen_config.f_stars[-1]:.1f})")
@@ -586,11 +692,16 @@ def run_dataset_generation(
           f"({gen_config.n_random_per_freq}/freq)")
     print(f"  Smooth random field samples: {total_smooth} "
           f"({gen_config.n_smooth_per_freq}/freq)")
-    print(f"  Opt trajectory samples: ~{total_opt} "
-          f"({len(opt_freqs)} freqs × "
-          f"{gen_config.opt_n_iters} iters / {gen_config.opt_snapshot_every})")
+    print(f"  Neural opt trajectory samples: ~{total_opt} "
+          f"({len(opt_freqs)} freqs × ~{snapshots_per_freq} snapshots)")
+    print(f"  Neural opt: {gen_config.opt_n_iters} iters, "
+          f"lr {gen_config.opt_lr}→{gen_config.opt_lr_end} ({gen_config.opt_lr_schedule}), "
+          f"MLP {gen_config.opt_neural_n_layers}×{gen_config.opt_neural_hidden_size}, "
+          f"warm_start={gen_config.opt_warm_start}")
     print(f"  Estimated total: ~{total_random + total_smooth + total_opt}")
     print(f"  Output: {out_path}\n")
+
+    prev_theta: list | None = None  # for warm-starting across frequencies
 
     # 3. Loop over frequencies
     for fi, f_star in enumerate(gen_config.f_stars):
@@ -634,15 +745,28 @@ def run_dataset_generation(
             )
             append_samples(out_path, smooth_samples)
 
-        # 3d. Optimization trajectory
+        # 3d. Neural optimization trajectory
         if f_star in opt_freqs:
-            print(f"\n--- Optimization trajectory at f*={f_star:.2f} ---")
-            opt_samples = generate_opt_trajectory(
+            print(f"\n--- Neural opt trajectory at f*={f_star:.2f} ---")
+            warm_theta = prev_theta if gen_config.opt_warm_start else None
+            opt_samples, final_theta = generate_opt_trajectory_neural(
                 ctx, fctx,
                 n_iters=gen_config.opt_n_iters,
                 lr=gen_config.opt_lr,
+                lr_end=gen_config.opt_lr_end,
+                lr_schedule=gen_config.opt_lr_schedule,
+                lambda_l2=gen_config.opt_lambda_l2,
                 snapshot_every=gen_config.opt_snapshot_every,
+                hidden_size=gen_config.opt_neural_hidden_size,
+                n_layers=gen_config.opt_neural_n_layers,
+                n_fourier=gen_config.opt_neural_n_fourier,
+                seed=gen_config.opt_neural_seed,
+                output_scale=gen_config.opt_neural_output_scale,
+                theta_init=warm_theta,
+                patience=gen_config.opt_patience,
+                patience_min_delta=gen_config.opt_patience_min_delta,
             )
+            prev_theta = final_theta
             append_samples(out_path, opt_samples)
 
     # Summary
