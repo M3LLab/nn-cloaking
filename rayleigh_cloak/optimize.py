@@ -231,14 +231,14 @@ def get_top_surface_beyond_cloak_indices(
     y_top: float,
     x_left: float,
     x_right: float,
-    n_probe: int = 20,
     tol: float = 1e-6,
 ) -> np.ndarray:
-    """Return node indices on the top surface beyond the cloak footprint.
+    """Return node indices on the top surface *downstream* (right) of the cloak.
 
-    Geometry-agnostic: probes a vertical column below each surface node to
-    determine whether the cloak or defect lies beneath it.  Nodes above the
-    cloak footprint are excluded.
+    Because the cloak outer boundary starts at the free surface (the outer
+    triangle base lies on y_top), ``geometry.in_cloak`` evaluated directly on
+    surface nodes correctly identifies the full cloak footprint.  No column
+    probing is required.
 
     Parameters
     ----------
@@ -247,7 +247,6 @@ def get_top_surface_beyond_cloak_indices(
     y_top : y-coordinate of the free surface
     x_left : left edge of the physical domain (exclude PML)
     x_right : right edge of the physical domain (exclude PML)
-    n_probe : number of depth samples to check for cloak/defect membership
     tol : positional tolerance for surface detection
     """
     import jax
@@ -261,23 +260,15 @@ def get_top_surface_beyond_cloak_indices(
     if len(top_phys) == 0:
         return top_phys
 
-    # Probe a column of y-values below each surface node to detect cloak footprint
-    y_min = pts[:, 1].min()
-    y_probes = np.linspace(y_top - tol, y_min, n_probe)
-
-    above_cloak = np.zeros(len(top_phys), dtype=bool)
     x_surface = pts[top_phys, 0]
+    surface_pts = jnp.column_stack([
+        jnp.array(x_surface),
+        jnp.full(len(top_phys), y_top),
+    ])
+    above_cloak = np.asarray(jax.vmap(geometry.in_cloak)(surface_pts))
+    downstream = x_surface > geometry.x_c + tol
 
-    for y_probe in y_probes:
-        probe_pts = jnp.column_stack([
-            jnp.array(x_surface),
-            jnp.full(len(top_phys), y_probe),
-        ])
-        in_c = np.asarray(jax.vmap(geometry.in_cloak)(probe_pts))
-        in_d = np.asarray(jax.vmap(geometry.in_defect)(probe_pts))
-        above_cloak |= (in_c | in_d)
-
-    return top_phys[~above_cloak]
+    return top_phys[~above_cloak & downstream]
 
 
 def cloaking_distortion_percent(

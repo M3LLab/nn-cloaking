@@ -34,11 +34,17 @@ class TriangularCloakGeometry:
     # ── region membership (JAX-traceable) ────────────────────────────
 
     def in_cloak(self, x: jnp.ndarray) -> jnp.ndarray:
+        """True inside the full outer triangle (cloak annulus + defect void).
+
+        The outer triangle base lies on the free surface, so this returns True
+        at the surface for any x within the cloak footprint.  Material and
+        F-tensor computations use ``in_cloak & ~in_defect`` to restrict to the
+        annular region where the effective properties apply.
+        """
         depth = self.y_top - x[1]
         r = jnp.abs(x[0] - self.x_c) / self.c
-        d1 = self.a * (1.0 - r)
         d2 = self.b * (1.0 - r)
-        return (r <= 1.0) & (depth >= d1) & (depth <= d2)
+        return (r <= 1.0) & (depth >= 0.0) & (depth <= d2)
 
     def in_defect(self, x: jnp.ndarray) -> jnp.ndarray:
         depth = self.y_top - x[1]
@@ -54,7 +60,14 @@ class TriangularCloakGeometry:
         F22 = (self.b - self.a) / self.b
         F_cloak = jnp.array([[1.0, 0.0],
                               [F21, F22]])
-        return jnp.where(self.in_cloak(x), F_cloak, jnp.eye(2))
+        # F_cloak applies only in the annular region (outer minus inner triangle).
+        # Compute inline to avoid composing in_cloak/in_defect in a traced context.
+        depth = self.y_top - x[1]
+        r = jnp.abs(x[0] - self.x_c) / self.c
+        d1 = self.a * (1.0 - r)
+        d2 = self.b * (1.0 - r)
+        in_annulus = (r <= 1.0) & (depth >= d1) & (depth <= d2)
+        return jnp.where(in_annulus, F_cloak, jnp.eye(2))
 
     # ── gmsh geometry construction ───────────────────────────────────
 

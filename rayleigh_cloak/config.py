@@ -290,11 +290,14 @@ class DerivedParams:
 
         lambda_star = dom.lambda_star
 
-        # Frequency: use explicit frequency_hz if set, otherwise f_star
+        # Frequency: use explicit frequency_hz if set, otherwise f_star.
+        # f_star follows the paper convention (Chatzopoulos et al. 2023):
+        #   f* = 2b / λ_R,  where b ≈ λ_star (b_factor * a_factor * H_factor ≈ 1)
+        # so ω = 2π·cR·f* / (2·λ_star).
         if src.frequency_hz > 0:
             omega = 2 * np.pi * src.frequency_hz
         else:
-            omega = 2 * np.pi * dom.f_star * cR / lambda_star
+            omega = 2 * np.pi * dom.f_star * cR / (2.0 * lambda_star)
 
         # Circular geometry: domain sized around the void
         ri_val = rc_val = y_c_val = None
