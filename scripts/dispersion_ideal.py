@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -426,10 +427,24 @@ def bloch_eigenproblem(K, M, nodes, bottom_nodes, right_to_left, k, L_c,
     # Solve for lowest n_eigs eigenvalues via ARPACK (shift-and-invert)
     n_eigs = min(n_eigs, 2 * n_free - 6)
     try:
-        from scipy.sparse.linalg import eigsh
+        from scipy.sparse.linalg import eigsh, splu, LinearOperator
+
+        # SuperLU (used internally by eigsh sigma= shift-and-invert) is NOT
+        # thread-safe.  Instead, factorize explicitly here and pass OPinv so
+        # ARPACK never calls SuperLU internally.
+        # MMD_AT_PLUS_A reordering drastically reduces fill-in (10-50x less
+        # memory than no reordering on unordered FEM meshes).
+        K_r_csc = K_r.tocsc()
+        lu = splu(K_r_csc, permc_spec="MMD_AT_PLUS_A")
+        n_dof = K_r_csc.shape[0]
+        OPinv = LinearOperator(
+            shape=(n_dof, n_dof),
+            matvec=lu.solve,
+            dtype=complex,
+        )
         omega_sq, vecs = eigsh(
             K_r, k=n_eigs, M=M_r,
-            sigma=0.0, which="LM",
+            sigma=0.0, OPinv=OPinv, which="LM",
             tol=1e-9, maxiter=2000,
         )
         # eigsh returns eigenvalues in arbitrary order; sort ascending
@@ -548,6 +563,8 @@ def run_sweep(case: str, p: dict, k_vals: np.ndarray, n_eigs: int,
 
     def _solve_one(ki_k):
         ki, k = ki_k
+        t3 = time.time()
+        print(f"  [k {ki+1:3d}/{n_k}] start  k_norm={k/(2*np.pi):.3f}", flush=True)
         omega, vecs, free_nodes = bloch_eigenproblem(
             K, M, nodes, bottom_nodes, right_to_left, k, L_c, n_eigs=n_eigs
         )
@@ -556,6 +573,9 @@ def run_sweep(case: str, p: dict, k_vals: np.ndarray, n_eigs: int,
         )
         f_star = omega / (2 * np.pi * cR / ls)
         k_norm = k / (2 * np.pi)
+        dt = time.time() - t3
+        print(f"  [k {ki+1:3d}/{n_k}] done   k_norm={k_norm:.3f}  "
+              f"n_eigs={len(f_star)}  ({dt:.2f}s)", flush=True)
         return ki, k_norm, f_star, ipr
 
     if n_workers > 1:
@@ -748,10 +768,12 @@ def main():
     ap.add_argument("--case", choices=["both", "reference", "ideal_cloak"],
                     default="both",
                     help="Which case(s) to run (default both)")
+    # Default: single process, BLAS uses all cores for each eigsh call.
+    # Multiple workers cause OOM (each holds SpLU + ARPACK workspace).
     ap.add_argument("--workers", "-j", type=int,
-                    default=os.cpu_count() or 1,
+                    default=1,
                     help="Number of parallel threads for k-point solves "
-                         "(default: all CPUs)")
+                         "(default: 1, let BLAS parallelise internally)")
     args = ap.parse_args()
 
     p       = derive_params(H_factor=args.H_factor)
