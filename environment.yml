@@ -23,6 +23,7 @@ dependencies:
   - pkgconfig
   - platformdirs
   - pooch
+  - pydantic
   - pybind11
   - pygments
   - pyvista

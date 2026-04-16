@@ -10,6 +10,7 @@
 #   ./run_dispersion.sh           # run (skips if NPZ files already exist)
 #   ./run_dispersion.sh -f        # force re-run
 #   ./run_dispersion.sh --h-elem 0.12   # coarser mesh, faster
+#   ./run_dispersion.sh -j 8      # use 8 threads (default: all CPUs)
 
 set -e
 cd "$(dirname "$0")"

@@ -20,8 +20,10 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -500,7 +502,7 @@ def compute_ipr(vecs, free_nodes, nodes, elems, right_to_left, bottom_nodes):
 def run_sweep(case: str, p: dict, k_vals: np.ndarray, n_eigs: int,
               h_elem: float, h_fine: float, out_dir: Path, force: bool,
               lumped: bool = False, H_factor: float = 1.0,
-              tag: str | None = None):
+              tag: str | None = None, workers: int = 1):
     """Run or load the Bloch-Floquet sweep for one case.
 
     Returns arrays:
@@ -542,26 +544,47 @@ def run_sweep(case: str, p: dict, k_vals: np.ndarray, n_eigs: int,
     ks_out, fs_out, iprs_out = [], [], []
 
     n_k = len(k_vals)
-    for ki, k in enumerate(k_vals):
-        t3 = time.time()
+    n_workers = min(workers, n_k)
+
+    def _solve_one(ki_k):
+        ki, k = ki_k
         omega, vecs, free_nodes = bloch_eigenproblem(
             K, M, nodes, bottom_nodes, right_to_left, k, L_c, n_eigs=n_eigs
         )
         ipr = compute_ipr(
             vecs, free_nodes, nodes, elems, right_to_left, bottom_nodes
         )
-
-        # Normalise: f* = ω / (2π cR / λ*),  k_norm = k / (2π)
         f_star = omega / (2 * np.pi * cR / ls)
         k_norm = k / (2 * np.pi)
+        return ki, k_norm, f_star, ipr
 
-        ks_out.extend([k_norm] * len(omega))
-        fs_out.extend(f_star.tolist())
-        iprs_out.extend(ipr.tolist())
+    if n_workers > 1:
+        print(f"  Solving {n_k} k-points with {n_workers} threads …")
+        t_all = time.time()
+        results = [None] * n_k
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            futures = {pool.submit(_solve_one, (ki, k)): ki
+                       for ki, k in enumerate(k_vals)}
+            for fut in as_completed(futures):
+                ki, k_norm, f_star, ipr = fut.result()
+                results[ki] = (k_norm, f_star, ipr)
+        for ki, (k_norm, f_star, ipr) in enumerate(results):
+            ks_out.extend([k_norm] * len(f_star))
+            fs_out.extend(f_star.tolist())
+            iprs_out.extend(ipr.tolist())
+        print(f"  All k-points done ({time.time()-t_all:.1f}s)")
+    else:
+        for ki, k in enumerate(k_vals):
+            t3 = time.time()
+            _, k_norm, f_star, ipr = _solve_one((ki, k))
 
-        dt = time.time() - t3
-        print(f"  k {ki+1:3d}/{n_k}  k_norm={k_norm:.3f}  "
-              f"n_eigs={len(omega)}  ({dt:.2f}s)")
+            ks_out.extend([k_norm] * len(f_star))
+            fs_out.extend(f_star.tolist())
+            iprs_out.extend(ipr.tolist())
+
+            dt = time.time() - t3
+            print(f"  k {ki+1:3d}/{n_k}  k_norm={k_norm:.3f}  "
+                  f"n_eigs={len(f_star)}  ({dt:.2f}s)")
 
     ks_out   = np.array(ks_out)
     fs_out   = np.array(fs_out)
@@ -725,6 +748,10 @@ def main():
     ap.add_argument("--case", choices=["both", "reference", "ideal_cloak"],
                     default="both",
                     help="Which case(s) to run (default both)")
+    ap.add_argument("--workers", "-j", type=int,
+                    default=os.cpu_count() or 1,
+                    help="Number of parallel threads for k-point solves "
+                         "(default: all CPUs)")
     args = ap.parse_args()
 
     p       = derive_params(H_factor=args.H_factor)
@@ -737,7 +764,8 @@ def main():
     print(f"  a = {p['a']:.4f},  b = {p['b']:.4f},  c = {p['c']:.4f}")
     print(f"  BZ edge: k_norm = {(np.pi/p['L_c'])/(2*np.pi):.3f}")
     print(f"  Mesh: h_elem={args.h_elem}, h_fine={args.h_fine}")
-    print(f"  k-points: {args.n_kpts},  eigenvalues/k: {args.n_eigs}\n")
+    print(f"  k-points: {args.n_kpts},  eigenvalues/k: {args.n_eigs}")
+    print(f"  Workers: {args.workers}\n")
 
     L_c    = p["L_c"]
     # Paper §5.1: k_x1 ∈ [π/(100 L_c), π/L_c] — skip Γ to avoid doubly
@@ -749,6 +777,7 @@ def main():
         n_eigs=args.n_eigs, h_elem=args.h_elem, h_fine=args.h_fine,
         out_dir=out_dir, force=args.force,
         lumped=args.lumped_mass, H_factor=args.H_factor,
+        workers=args.workers,
     )
 
     ref_data = cloak_data = None
