@@ -161,9 +161,11 @@ def main():
 
         run_cfg["output_dir"] = run_output
 
-        # Write temp config
-        tmp_config = Path(run_output) / "config.yaml"
-        tmp_config.parent.mkdir(parents=True, exist_ok=True)
+        # Write temp config (outside output dir to avoid SameFileError
+        # when run_optimize.py copies config into output_dir)
+        tmp_dir = Path(base_output_dir) / "_tmp_configs"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        tmp_config = tmp_dir / f"{run_tag}.yaml"
         with open(tmp_config, "w") as f:
             yaml.dump(run_cfg, f, default_flow_style=False, sort_keys=False)
 

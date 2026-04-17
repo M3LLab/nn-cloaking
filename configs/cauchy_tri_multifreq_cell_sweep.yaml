@@ -68,4 +68,4 @@ optimization:
     seed: 42
     output_scale: 0.1
 
-output_dir: output/cauchy_tri_multifreq_long
+output_dir: output/cauchy_tri_cell_sweep
