@@ -125,11 +125,16 @@ def run_dataset_augmentation(
 
         batch = []
         for si, s in enumerate(best_samples):
+            src = s["f_star_source"]
+            if abs(src - f_star) < 1e-6:
+                print(f"  augment [{si + 1}/{len(best_samples)}] "
+                      f"src_f*={src:.2f} == target_f*={f_star:.3f}  [skip, already in dataset]")
+                n_done += 1
+                continue
             params = (jnp.array(s["cell_C_flat"]), jnp.array(s["cell_rho"]))
             t0 = time.time()
             loss = evaluate_loss(fctx, params)
             dt = time.time() - t0
-            src = s["f_star_source"]
             print(f"  augment [{si + 1}/{len(best_samples)}] "
                   f"src_f*={src:.2f} target_f*={f_star:.3f} "
                   f"loss={loss:.4e} ({dt:.1f}s)")
