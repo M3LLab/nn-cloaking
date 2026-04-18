@@ -11,13 +11,15 @@ subsequent runs can skip them when picking best samples.
 
 from __future__ import annotations
 
-import time
+import contextlib
+import io
 from dataclasses import dataclass
 from pathlib import Path
 
 import h5py
 import jax.numpy as jnp
 import numpy as np
+from tqdm.auto import tqdm
 
 from rayleigh_cloak.config import SimulationConfig
 
@@ -27,6 +29,13 @@ from dataset_gen.generate import (
     build_freq_context,
     evaluate_loss,
 )
+
+
+@contextlib.contextmanager
+def _silence_stdout():
+    """Swallow stdout — used to suppress noisy jax-fem / solver prints."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        yield
 
 
 def _decode_sample_types(raw) -> np.ndarray:
@@ -106,57 +115,44 @@ def run_dataset_augmentation(
     ctx = build_fixed_context(base_config)
 
     total = len(target_f_stars) * len(best_samples)
-    print(f"\n=== Augmentation plan ===")
-    print(f"  Source samples:  {len(best_samples)} (top-{aug_config.top_k} per freq)")
-    print(f"  Target freqs:    {len(target_f_stars)} "
-          f"({target_f_stars[0]:.3f} → {target_f_stars[-1]:.3f})")
-    print(f"  Total new evals: {total}")
-    print(f"  Output:          {h5_path}\n")
+    tqdm.write(f"\n=== Augmentation plan ===")
+    tqdm.write(f"  Source samples:  {len(best_samples)} (top-{aug_config.top_k} per freq)")
+    tqdm.write(f"  Target freqs:    {len(target_f_stars)} "
+               f"({target_f_stars[0]:.3f} → {target_f_stars[-1]:.3f})")
+    tqdm.write(f"  Total new evals: {total}")
+    tqdm.write(f"  Output:          {h5_path}\n")
 
-    t_start = time.time()
-    n_done = 0
+    with tqdm(total=total, desc="augment", unit="eval", dynamic_ncols=True) as pbar:
+        for f_star in target_f_stars:
+            with _silence_stdout():
+                fctx = build_freq_context(ctx, f_star)
 
-    for fi, f_star in enumerate(target_f_stars):
-        print(f"\n{'=' * 60}")
-        print(f"  Target freq {fi + 1}/{len(target_f_stars)}: f* = {f_star:.3f}")
-        print(f"{'=' * 60}")
+            batch = []
+            for s in best_samples:
+                src = s["f_star_source"]
+                if abs(src - f_star) < 1e-6:
+                    pbar.update(1)
+                    continue
+                params = (jnp.array(s["cell_C_flat"]), jnp.array(s["cell_rho"]))
+                with _silence_stdout():
+                    loss = evaluate_loss(fctx, params)
+                batch.append({
+                    "cell_C_flat": s["cell_C_flat"],
+                    "cell_rho": s["cell_rho"],
+                    "f_star": f_star,
+                    "loss": loss,
+                    "sample_type": f"augment_from_f{src:.3f}",
+                })
+                pbar.set_postfix_str(
+                    f"target={f_star:.3f} src={src:.2f} loss={loss:.2e}"
+                )
+                pbar.update(1)
 
-        fctx = build_freq_context(ctx, f_star)
-
-        batch = []
-        for si, s in enumerate(best_samples):
-            src = s["f_star_source"]
-            if abs(src - f_star) < 1e-6:
-                print(f"  augment [{si + 1}/{len(best_samples)}] "
-                      f"src_f*={src:.2f} == target_f*={f_star:.3f}  [skip, already in dataset]")
-                n_done += 1
-                continue
-            params = (jnp.array(s["cell_C_flat"]), jnp.array(s["cell_rho"]))
-            t0 = time.time()
-            loss = evaluate_loss(fctx, params)
-            dt = time.time() - t0
-            print(f"  augment [{si + 1}/{len(best_samples)}] "
-                  f"src_f*={src:.2f} target_f*={f_star:.3f} "
-                  f"loss={loss:.4e} ({dt:.1f}s)")
-            batch.append({
-                "cell_C_flat": s["cell_C_flat"],
-                "cell_rho": s["cell_rho"],
-                "f_star": f_star,
-                "loss": loss,
-                "sample_type": f"augment_from_f{src:.3f}",
-            })
-            n_done += 1
-
-        append_samples(h5_path, batch)
-        elapsed = time.time() - t_start
-        rate = n_done / max(elapsed, 1e-6)
-        remain = (total - n_done) / max(rate, 1e-6)
-        print(f"  Progress: {n_done}/{total}  "
-              f"elapsed={elapsed / 60:.1f}m  eta={remain / 60:.1f}m")
+            with _silence_stdout():
+                append_samples(h5_path, batch)
 
     with h5py.File(h5_path, "r") as f:
         n_total = f["loss"].shape[0]
-    print(f"\n{'=' * 60}")
-    print(f"  Augmentation complete: {total} new samples (total {n_total})")
-    print(f"  Output: {h5_path}")
-    print(f"{'=' * 60}")
+    tqdm.write(f"\n=== Augmentation complete ===")
+    tqdm.write(f"  New samples: {total}  |  Total in file: {n_total}")
+    tqdm.write(f"  Output: {h5_path}")

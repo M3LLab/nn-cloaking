@@ -28,6 +28,8 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import logging
 import sys
 from pathlib import Path
@@ -35,7 +37,12 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 
-logging.getLogger("jax_fem").setLevel(logging.WARNING)
+# Swallow the jax-fem banner (a bare `print` at module import).
+with contextlib.redirect_stdout(io.StringIO()):
+    import jax_fem  # noqa: F401
+
+logging.getLogger("jax_fem").setLevel(logging.ERROR)
+logging.getLogger("jax").setLevel(logging.ERROR)
 
 from rayleigh_cloak import load_config
 from dataset_gen.augment import AugmentConfig, run_dataset_augmentation
