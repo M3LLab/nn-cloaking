@@ -44,14 +44,32 @@ def _decode_sample_types(raw) -> np.ndarray:
     ])
 
 
-def load_best_params_per_freq(h5_path: Path, top_k: int = 1) -> list[dict]:
+def _existing_augment_pairs(h5_path: Path, round_decimals: int = 4) -> set[tuple[str, float]]:
+    """Return {(sample_type, f_star_rounded)} for all augment_* rows already in the file."""
+    with h5py.File(h5_path, "r") as f:
+        types = _decode_sample_types(f["sample_type"][:])
+        f_stars = np.round(f["f_star"][:], round_decimals)
+    return {
+        (t, float(fs))
+        for t, fs in zip(types, f_stars)
+        if t.startswith("augment_")
+    }
+
+
+def load_best_params_per_freq(
+    h5_path: Path, top_k: int = 1, round_decimals: int = 4,
+) -> list[dict]:
     """Return the top-k lowest-loss samples for each unique source frequency.
+
+    f_star values are rounded to ``round_decimals`` before grouping to avoid
+    treating float64 near-duplicates (e.g. 1.95 vs 1.9500000000000002) as
+    distinct source frequencies.
 
     Samples whose ``sample_type`` begins with ``augment_`` are excluded so the
     function is idempotent when the dataset has already been augmented.
     """
     with h5py.File(h5_path, "r") as f:
-        f_stars = f["f_star"][:]
+        f_stars = np.round(f["f_star"][:], round_decimals)
         losses = f["loss"][:]
         sample_types = _decode_sample_types(f["sample_type"][:])
         cell_C_ds = f["cell_C_flat"]
@@ -112,27 +130,45 @@ def run_dataset_augmentation(
         for f in np.linspace(f_min, f_max, aug_config.n_target_freqs)
     ]
 
+    already_done = _existing_augment_pairs(h5_path)
+
+    planned_pairs = {
+        (f"augment_from_f{s['f_star_source']:.3f}", round(f_star, 4))
+        for f_star in target_f_stars
+        for s in best_samples
+        if abs(s["f_star_source"] - f_star) >= 1e-6
+    }
+    total = len(planned_pairs)
+    resumed = len(planned_pairs & already_done)
+
     ctx = build_fixed_context(base_config)
 
-    total = len(target_f_stars) * len(best_samples)
     tqdm.write(f"\n=== Augmentation plan ===")
     tqdm.write(f"  Source samples:  {len(best_samples)} (top-{aug_config.top_k} per freq)")
     tqdm.write(f"  Target freqs:    {len(target_f_stars)} "
                f"({target_f_stars[0]:.3f} → {target_f_stars[-1]:.3f})")
-    tqdm.write(f"  Total new evals: {total}")
+    tqdm.write(f"  Total evals:     {total}  (already done: {resumed})")
     tqdm.write(f"  Output:          {h5_path}\n")
 
-    with tqdm(total=total, desc="augment", unit="eval", dynamic_ncols=True) as pbar:
+    with tqdm(total=total, initial=resumed, desc="augment", unit="eval",
+              dynamic_ncols=True) as pbar:
         for f_star in target_f_stars:
+            # Skip the whole target freq if every src pair is already in the file.
+            pending = [
+                s for s in best_samples
+                if abs(s["f_star_source"] - f_star) >= 1e-6
+                and (f"augment_from_f{s['f_star_source']:.3f}", round(f_star, 4))
+                    not in already_done
+            ]
+            if not pending:
+                continue
+
             with _silence_stdout():
                 fctx = build_freq_context(ctx, f_star)
 
             batch = []
-            for s in best_samples:
+            for s in pending:
                 src = s["f_star_source"]
-                if abs(src - f_star) < 1e-6:
-                    pbar.update(1)
-                    continue
                 params = (jnp.array(s["cell_C_flat"]), jnp.array(s["cell_rho"]))
                 with _silence_stdout():
                     loss = evaluate_loss(fctx, params)

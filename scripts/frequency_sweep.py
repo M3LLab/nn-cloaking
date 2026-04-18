@@ -298,7 +298,7 @@ def main():
         ref_surface_idx = kept_nodes[cloak_surface_idx]
         print(f"Surface evaluation nodes beyond cloak: {len(cloak_surface_idx)}")
 
-        f_stars = np.arange(0.1, 4.05, 0.1)
+        f_stars = np.arange(0.7, 3.35, 0.1)
 
         shared = dict(
             base_config=base_config, f_stars=f_stars,
