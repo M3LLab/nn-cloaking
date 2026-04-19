@@ -15,7 +15,6 @@ from einops import rearrange
 from jaxtyping import Float
 from pydantic import BaseModel, ConfigDict
 from torch import Tensor
-from torchvision.models import convnext_tiny
 
 from surrogate.dataset import SurrogateBatch
 
@@ -159,6 +158,8 @@ def _build_convnext_tiny_trunk(in_channels: int, z_dim: int) -> nn.Module:
     Random init (weights=None). Works for 50×50 grids but FAILS on ≤20×20 due
     to ConvNeXt's 32× cumulative downsampling.
     """
+    from torchvision.models import convnext_tiny
+
     trunk = convnext_tiny(weights=None)
     stem_conv: nn.Conv2d = trunk.features[0][0]
     trunk.features[0][0] = nn.Conv2d(
