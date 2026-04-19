@@ -15,7 +15,7 @@ from einops import rearrange
 from jaxtyping import Float
 from pydantic import BaseModel, ConfigDict
 from torch import Tensor
-from torchvision.models import convnext_small
+from torchvision.models import convnext_tiny
 
 from surrogate.dataset import SurrogateBatch
 
@@ -68,6 +68,111 @@ class SpectrumDecoder(nn.Module):
         return self.net(z_ff).squeeze(-1)
 
 
+class LayerNorm2d(nn.Module):
+    """Channel-first LayerNorm for (B, C, H, W) tensors."""
+
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(dim))
+        self.bias = nn.Parameter(torch.zeros(dim))
+        self.eps = eps
+
+    def forward(self, x: Tensor) -> Tensor:
+        mean = x.mean(1, keepdim=True)
+        var = (x - mean).pow(2).mean(1, keepdim=True)
+        x = (x - mean) / torch.sqrt(var + self.eps)
+        return x * self.weight[:, None, None] + self.bias[:, None, None]
+
+
+class ConvNeXtBlock(nn.Module):
+    """ConvNeXt-v1 block: depthwise conv → LayerNorm → pointwise expand → GELU → pointwise project, residual."""
+
+    def __init__(self, dim: int, kernel: int = 7, mlp_ratio: int = 4):
+        super().__init__()
+        self.dwconv = nn.Conv2d(dim, dim, kernel_size=kernel,
+                                padding=kernel // 2, groups=dim)
+        self.norm = nn.LayerNorm(dim)
+        self.pw1 = nn.Linear(dim, mlp_ratio * dim)
+        self.act = nn.GELU()
+        self.pw2 = nn.Linear(mlp_ratio * dim, dim)
+
+    def forward(self, x: Tensor) -> Tensor:
+        residual = x
+        x = self.dwconv(x)
+        x = x.permute(0, 2, 3, 1)           # B H W C for channel-last norm + MLP
+        x = self.norm(x)
+        x = self.pw1(x)
+        x = self.act(x)
+        x = self.pw2(x)
+        x = x.permute(0, 3, 1, 2)
+        return residual + x
+
+
+class SmallConvNeXt(nn.Module):
+    """ConvNeXt-style trunk sized for 10×10–50×50 cell grids.
+
+    Stride-1 stem (preserves spatial dim) then three stages of 2 blocks each
+    with stride-2 downsamples between. Spatial flow: 10→10→5→2 / 20→20→10→5 /
+    50→50→25→12 before global average pooling. ~1.6M params at default widths.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_dim: int,
+        dims: tuple[int, int, int] = (64, 128, 256),
+        depths: tuple[int, int, int] = (2, 2, 2),
+        kernel: int = 7,
+    ):
+        super().__init__()
+        self.stem = nn.Sequential(
+            nn.Conv2d(in_channels, dims[0], kernel_size=3, padding=1),
+            LayerNorm2d(dims[0]),
+        )
+        self.stages = nn.ModuleList([
+            nn.Sequential(*[ConvNeXtBlock(dims[0], kernel) for _ in range(depths[0])])
+        ])
+        self.downsamples = nn.ModuleList()
+        for i in range(1, len(dims)):
+            self.downsamples.append(nn.Sequential(
+                LayerNorm2d(dims[i - 1]),
+                nn.Conv2d(dims[i - 1], dims[i], kernel_size=2, stride=2),
+            ))
+            self.stages.append(nn.Sequential(
+                *[ConvNeXtBlock(dims[i], kernel) for _ in range(depths[i])]
+            ))
+        self.head_norm = nn.LayerNorm(dims[-1])
+        self.head = nn.Linear(dims[-1], out_dim)
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = self.stem(x)
+        x = self.stages[0](x)
+        for ds, stage in zip(self.downsamples, self.stages[1:]):
+            x = stage(ds(x))
+        x = x.mean(dim=(2, 3))  # global average pool
+        return self.head(self.head_norm(x))
+
+
+def _build_convnext_tiny_trunk(in_channels: int, z_dim: int) -> nn.Module:
+    """Torchvision ConvNeXt-Tiny with stem swapped for `in_channels` and head → `z_dim`.
+
+    Random init (weights=None). Works for 50×50 grids but FAILS on ≤20×20 due
+    to ConvNeXt's 32× cumulative downsampling.
+    """
+    trunk = convnext_tiny(weights=None)
+    stem_conv: nn.Conv2d = trunk.features[0][0]
+    trunk.features[0][0] = nn.Conv2d(
+        in_channels,
+        stem_conv.out_channels,
+        kernel_size=stem_conv.kernel_size,
+        stride=stem_conv.stride,
+        padding=stem_conv.padding,
+    )
+    final_linear: nn.Linear = trunk.classifier[-1]
+    trunk.classifier[-1] = nn.Linear(final_linear.in_features, z_dim)
+    return trunk
+
+
 class ForwardFEM_CNN(nn.Module):
     def __init__(
         self,
@@ -77,21 +182,21 @@ class ForwardFEM_CNN(nn.Module):
         f_min: float = 1.0,
         f_max: float = 4.0,
         decoder_hidden: int = 128,
+        backbone: str = "small_convnext",
     ):
         super().__init__()
         in_channels = n_C_params + 1  # C params stacked with rho
 
-        self.trunk = convnext_small()
-        stem_conv: nn.Conv2d = self.trunk.features[0][0]
-        self.trunk.features[0][0] = nn.Conv2d(
-            in_channels,
-            stem_conv.out_channels,
-            kernel_size=stem_conv.kernel_size,
-            stride=stem_conv.stride,
-            padding=stem_conv.padding,
-        )
-        final_linear: nn.Linear = self.trunk.classifier[-1]
-        self.trunk.classifier[-1] = nn.Linear(final_linear.in_features, z_dim)
+        if backbone == "small_convnext":
+            self.trunk = SmallConvNeXt(in_channels=in_channels, out_dim=z_dim)
+        elif backbone == "convnext_tiny":
+            self.trunk = _build_convnext_tiny_trunk(in_channels, z_dim)
+        else:
+            raise ValueError(
+                f"Unknown backbone {backbone!r}. "
+                f"Expected 'small_convnext' or 'convnext_tiny'."
+            )
+        self.backbone = backbone
 
         self.fourier = FourierFeatures(fourier_bands, f_min, f_max)
         self.decoder = SpectrumDecoder(z_dim, self.fourier.out_dim, decoder_hidden)
