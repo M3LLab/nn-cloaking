@@ -14,6 +14,11 @@
 #   ./dispersion_run_jax.sh -f                             # force re-run
 #   ./dispersion_run_jax.sh configs/continuous.yaml -f     # config + force
 #   ./dispersion_run_jax.sh --h-elem 0.12                  # coarser mesh
+#
+# Optimized cloak dispersion (reference vs optimized):
+#   ./dispersion_run_jax.sh best_configs/cauchy_tri_top.yaml \
+#       --params-npz best_configs/optimized_params.npz \
+#       --case optimized_vs_ref
 
 set -e
 cd "$(dirname "$0")"

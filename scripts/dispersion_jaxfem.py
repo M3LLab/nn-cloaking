@@ -45,7 +45,7 @@ import jax.numpy as jnp
 
 from rayleigh_cloak.config import DerivedParams, SimulationConfig, load_config
 from rayleigh_cloak.geometry.triangular import TriangularCloakGeometry
-from rayleigh_cloak.materials import C_iso, C_eff as C_eff_fn, rho_eff as rho_eff_fn
+from rayleigh_cloak.materials import C_iso, C_eff as C_eff_fn, rho_eff as rho_eff_fn, _get_converters
 
 
 # ── Unit-cell parameters from config ─────────────────────────────────
@@ -269,6 +269,80 @@ def element_materials(nodes, elems, case: str, p: dict):
     centroids = jnp.array(nodes[elems].mean(axis=1))
     C_elems = np.array(jax.vmap(lambda x: C_eff_fn(x, geo, C0_jax))(centroids))
     rho_elems = np.array(jax.vmap(lambda x: rho_eff_fn(x, geo, rho0))(centroids))
+
+    return C_elems, rho_elems
+
+
+def element_materials_optimized(nodes, elems, p: dict,
+                                params_npz: str, n_C_params: int = 2,
+                                n_x: int = 50, n_y: int = 50):
+    """Assign materials from optimized cell-based parameters.
+
+    Loads ``cell_C_flat`` and ``cell_rho`` from an .npz file, maps each
+    element centroid to the cell grid covering the cloak bounding box,
+    and returns per-element C and rho arrays.
+
+    Material values are clamped to physically valid ranges for the
+    eigenvalue dispersion analysis (positive density, positive shear
+    modulus).  The forward BVP solver tolerates negative Lamé parameters
+    as artifacts of isotropic approximation of Cosserat behaviour, but
+    the generalised eigenvalue problem requires positive-definite K & M.
+    """
+    rho0 = p["rho0"]
+    C0 = np.array(C_iso(p["lam"], p["mu"]))
+    n_e = len(elems)
+
+    # Load optimized parameters
+    data = np.load(params_npz)
+    cell_C_flat = data["cell_C_flat"].copy()   # (n_cells, n_C_params)
+    cell_rho = data["cell_rho"].copy()         # (n_cells,)
+
+    # ── Clamp to physical ranges ──────────────────────────────────────
+    # For n_C_params=2: flat = [λ, μ].  Need μ > 0 for positive-definite K,
+    # and ρ > 0 for positive-definite M.
+    rho_min = 0.01 * rho0       # 1% of background density
+    mu_min = 0.01 * p["mu"]     # 1% of background shear modulus
+
+    n_rho_clamped = int((cell_rho < rho_min).sum())
+    if n_rho_clamped:
+        print(f"  ⚠ Clamping {n_rho_clamped} cells with ρ < {rho_min:.1f} "
+              f"(min was {cell_rho.min():.1f})")
+    cell_rho = np.maximum(cell_rho, rho_min)
+
+    if n_C_params == 2:
+        n_mu_clamped = int((cell_C_flat[:, 1] < mu_min).sum())
+        if n_mu_clamped:
+            print(f"  ⚠ Clamping {n_mu_clamped} cells with μ < {mu_min:.1f} "
+                  f"(min was {cell_C_flat[:, 1].min():.1f})")
+        cell_C_flat[:, 1] = np.maximum(cell_C_flat[:, 1], mu_min)
+
+    # Cloak bounding box (same as CellDecomposition)
+    x_c = p["x_c"]
+    y_top = p["y_top"]
+    c = p["c"]
+    b = p["b"]
+    x_min, x_max = x_c - c, x_c + c
+    y_min, y_max = y_top - b, y_top
+    cell_dx = (x_max - x_min) / n_x
+    cell_dy = (y_max - y_min) / n_y
+
+    # Convert flat params → full tensors
+    _, from_flat = _get_converters(n_C_params)
+    cell_C_full = np.array(jax.vmap(from_flat)(jnp.array(cell_C_flat)))  # (n_cells,2,2,2,2)
+
+    # Map each centroid to a cell
+    centroids = nodes[elems].mean(axis=1)  # (n_e, 2)
+    ix = np.floor((centroids[:, 0] - x_min) / cell_dx).astype(int)
+    iy = np.floor((centroids[:, 1] - y_min) / cell_dy).astype(int)
+
+    C_elems = np.broadcast_to(C0, (n_e, 2, 2, 2, 2)).copy()
+    rho_elems = np.full(n_e, rho0)
+
+    in_grid = (ix >= 0) & (ix < n_x) & (iy >= 0) & (iy < n_y)
+    cell_idx = np.clip(ix * n_y + iy, 0, n_x * n_y - 1)
+
+    C_elems[in_grid] = cell_C_full[cell_idx[in_grid]]
+    rho_elems[in_grid] = cell_rho[cell_idx[in_grid]]
 
     return C_elems, rho_elems
 
@@ -497,7 +571,10 @@ def compute_ipr(vecs, free_nodes, nodes, elems, right_to_left, bottom_nodes):
 def run_sweep(case: str, p: dict, k_vals: np.ndarray, n_eigs: int,
               h_elem: float, h_fine: float, out_dir: Path, force: bool,
               lumped: bool = False, tag: str | None = None,
-              workers: int = 1):
+              workers: int = 1,
+              params_npz: str | None = None,
+              n_C_params: int = 2,
+              n_cells_x: int = 50, n_cells_y: int = 50):
     """Run or load a Bloch-Floquet sweep for one case."""
     if tag is None:
         tag = f"h{h_elem:g}_hf{h_fine:g}{'_lumped' if lumped else ''}"
@@ -508,15 +585,25 @@ def run_sweep(case: str, p: dict, k_vals: np.ndarray, n_eigs: int,
         d = np.load(npz_path)
         return d["ks"], d["fs"], d["iprs"]
 
+    # For the optimized cloak, use the same mesh topology as ideal_cloak
+    # (triangle cut out from the surface)
+    mesh_case = "ideal_cloak" if case == "optimized_cloak" else case
+
     print(f"\n=== {case.upper()} — generating mesh ===")
     t0 = time.time()
     nodes, elems, left_nodes, right_nodes, bottom_nodes, right_to_left = \
-        generate_mesh(case, p, h_elem=h_elem, h_fine=h_fine)
+        generate_mesh(mesh_case, p, h_elem=h_elem, h_fine=h_fine)
     print(f"  Mesh: {len(nodes)} nodes, {len(elems)} elements  ({time.time() - t0:.1f}s)")
 
     print(f"  Computing materials at {len(elems)} element centroids …")
     t1 = time.time()
-    C_elems, rho_elems = element_materials(nodes, elems, case, p)
+    if case == "optimized_cloak" and params_npz is not None:
+        C_elems, rho_elems = element_materials_optimized(
+            nodes, elems, p, params_npz,
+            n_C_params=n_C_params, n_x=n_cells_x, n_y=n_cells_y,
+        )
+    else:
+        C_elems, rho_elems = element_materials(nodes, elems, case, p)
     print(f"  Done ({time.time() - t1:.1f}s)")
 
     print(f"  Assembling K and M (lumped={lumped}) …")
@@ -585,7 +672,8 @@ def run_sweep(case: str, p: dict, k_vals: np.ndarray, n_eigs: int,
 
 
 def plot_dispersion(ref_data, cloak_data, p: dict, out_path: Path,
-                    ipr_threshold: float = 2.0, f_max: float = 2.2):
+                    ipr_threshold: float = 2.0, f_max: float = 2.2,
+                    cloak_label: str = "Ideal Cloak"):
     """Combined dispersion plot (paper Fig 3d-e style)."""
     plt.rcParams.update({
         "font.family": "DejaVu Sans",
@@ -602,13 +690,13 @@ def plot_dispersion(ref_data, cloak_data, p: dict, out_path: Path,
     ks_r, fs_r, iprs_r = ref_data
     ks_c, fs_c, iprs_c = cloak_data
 
-    ipr_max = float(max(iprs_r.max(), iprs_c.max()))
-    norm = Normalize(vmin=1.0, vmax=ipr_max)
+    ipr_cap = 15.0  # cap colorbar to avoid purple saturation
+    norm = Normalize(vmin=1.0, vmax=ipr_cap)
     cmap = cm.turbo
 
     for ks, fs, iprs, marker, label in [
         (ks_r, fs_r, iprs_r, "D", "Reference"),
-        (ks_c, fs_c, iprs_c, "o", "Ideal Cloak"),
+        (ks_c, fs_c, iprs_c, "o", cloak_label),
     ]:
         mask = fs <= f_max
         bulk = mask & (iprs < ipr_threshold)
@@ -616,14 +704,14 @@ def plot_dispersion(ref_data, cloak_data, p: dict, out_path: Path,
 
         ax.scatter(ks[bulk], fs[bulk],
                    s=3, marker=".",
-                   c=iprs[bulk], norm=norm, cmap=cmap,
+                   c=np.clip(iprs[bulk], 1.0, ipr_cap), norm=norm, cmap=cmap,
                    edgecolors="none", alpha=0.7, zorder=3)
 
         is_cloak = marker == "o"
         ax.scatter(ks[surface], fs[surface],
                    s=28.0 * (1.0 if is_cloak else 1.9),
                    marker=marker,
-                   c=iprs[surface], norm=norm, cmap=cmap,
+                   c=np.clip(iprs[surface], 1.0, ipr_cap), norm=norm, cmap=cmap,
                    edgecolors="black" if is_cloak else "none",
                    linewidths=0.9 if is_cloak else 0,
                    alpha=0.95, zorder=4,
@@ -673,6 +761,86 @@ def plot_dispersion(ref_data, cloak_data, p: dict, out_path: Path,
     print(f"\nPlot saved → {out_path}")
 
 
+def plot_single(data, p: dict, out_path: Path, label: str = "Reference",
+                marker: str = "D", ipr_threshold: float = 2.0,
+                f_max: float = 2.2, show_rayleigh: bool = True):
+    """Dispersion plot for a single dataset (with optional Rayleigh lines)."""
+    plt.rcParams.update({
+        "font.family": "DejaVu Sans",
+        "axes.spines.top": True,
+        "axes.spines.right": True,
+    })
+
+    fig, ax = plt.subplots(figsize=(8.5, 6.0))
+
+    L_c = p["L_c"]
+    k_edge = (np.pi / L_c) / (2 * np.pi)
+    x_pad = 0.012
+
+    ks, fs, iprs = data
+    ipr_cap = 15.0
+    norm = Normalize(vmin=1.0, vmax=ipr_cap)
+    cmap = cm.turbo
+
+    mask = fs <= f_max
+    bulk = mask & (iprs < ipr_threshold)
+    surface = mask & (iprs >= ipr_threshold)
+
+    ax.scatter(ks[bulk], fs[bulk],
+               s=3, marker=".",
+               c=np.clip(iprs[bulk], 1.0, ipr_cap), norm=norm, cmap=cmap,
+               edgecolors="none", alpha=0.7, zorder=3)
+
+    ax.scatter(ks[surface], fs[surface],
+               s=35, marker=marker,
+               c=np.clip(iprs[surface], 1.0, ipr_cap), norm=norm, cmap=cmap,
+               edgecolors="black", linewidths=0.8,
+               alpha=0.95, zorder=4, label=label)
+
+    if show_rayleigh:
+        k_line = np.linspace(0, k_edge, 300)
+        labelled = False
+        m = 0
+        while True:
+            f_up = 2 * m * k_edge + k_line
+            f_down = 2 * (m + 1) * k_edge - k_line
+            if f_up[0] > f_max:
+                break
+            for branch in (f_up, f_down):
+                mask_b = branch <= f_max
+                if not mask_b.any():
+                    continue
+                ax.plot(k_line[mask_b], branch[mask_b], "k--",
+                        lw=0.8, alpha=0.45, zorder=2,
+                        label=(r"Rayleigh Analytic" if not labelled else None))
+                labelled = True
+            m += 1
+
+    ax.set_xlim(-x_pad, k_edge + x_pad)
+    ax.set_ylim(0, f_max)
+    ax.set_xticks(np.arange(0.0, k_edge + 1e-6, 0.05))
+    ax.set_xlabel(r"$\xi = k\lambda^* / (2\pi)$", fontsize=12)
+    ax.set_ylabel(r"$f^* = f / (c_R / \lambda^*)$", fontsize=12)
+    ax.set_title(f"Bloch-Floquet Dispersion — {label}", fontsize=13,
+                 fontweight="bold", pad=10)
+    ax.grid(True, alpha=0.25, linestyle=":", linewidth=0.6)
+    ax.tick_params(direction="out", length=4)
+    ax.legend(fontsize=9, loc="upper left", framealpha=0.9, edgecolor="0.85")
+
+    fig.subplots_adjust(left=0.10, right=0.86, top=0.92, bottom=0.10)
+    cbar_ax = fig.add_axes([0.885, 0.10, 0.022, 0.82])
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, cax=cbar_ax)
+    cbar.set_label("IPR", fontsize=10)
+    cbar.outline.set_visible(False)
+    cbar.ax.tick_params(length=3)
+
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Plot saved → {out_path}")
+
+
 # ── main ──────────────────────────────────────────────────────────────
 
 
@@ -695,9 +863,20 @@ def main():
     ap.add_argument("--lumped-mass", action="store_true")
     ap.add_argument("--H-factor", type=float, default=1.0,
                     help="Scale unit-cell height (triangle dims stay fixed)")
-    ap.add_argument("--case", choices=["both", "reference", "ideal_cloak"],
-                    default="both")
+    ap.add_argument("--case", choices=["both", "reference", "ideal_cloak",
+                                       "optimized", "optimized_vs_ref"],
+                    default="both",
+                    help="Which cases to compute. 'optimized' runs optimized_cloak only; "
+                         "'optimized_vs_ref' compares reference vs optimized cloak.")
     ap.add_argument("--workers", "-j", type=int, default=1)
+    ap.add_argument("--params-npz", type=str, default=None,
+                    help="Path to optimized_params.npz (cell_C_flat, cell_rho)")
+    ap.add_argument("--n-C-params", type=int, default=2,
+                    help="Number of flat stiffness params per cell (default: 2 = isotropic)")
+    ap.add_argument("--n-cells-x", type=int, default=50,
+                    help="Number of cells in x for optimized grid (default: 50)")
+    ap.add_argument("--n-cells-y", type=int, default=50,
+                    help="Number of cells in y for optimized grid (default: 50)")
     args = ap.parse_args()
 
     # Load config
@@ -723,6 +902,9 @@ def main():
     print(f"  Mesh: h_elem={args.h_elem}, h_fine={args.h_fine}")
     print(f"  k-points: {args.n_kpts},  eigenvalues/k: {args.n_eigs}")
     print(f"  Workers: {args.workers}")
+    if args.params_npz:
+        print(f"  Optimized params: {args.params_npz}")
+        print(f"  Cell grid: {args.n_cells_x}x{args.n_cells_y}, n_C_params={args.n_C_params}")
     print(f"  Output: {out_dir}\n")
 
     L_c = p["L_c"]
@@ -732,13 +914,21 @@ def main():
         n_eigs=args.n_eigs, h_elem=args.h_elem, h_fine=args.h_fine,
         out_dir=out_dir, force=args.force,
         lumped=args.lumped_mass, workers=args.workers,
+        params_npz=args.params_npz,
+        n_C_params=args.n_C_params,
+        n_cells_x=args.n_cells_x, n_cells_y=args.n_cells_y,
     )
 
     ref_data = cloak_data = None
-    if args.case in ("both", "reference"):
+    if args.case in ("both", "reference", "optimized_vs_ref"):
         ref_data = run_sweep("reference", p, k_vals, **sweep_kw)
     if args.case in ("both", "ideal_cloak"):
         cloak_data = run_sweep("ideal_cloak", p, k_vals, **sweep_kw)
+    if args.case in ("optimized", "optimized_vs_ref"):
+        if args.params_npz is None:
+            print("ERROR: --params-npz is required for optimized_cloak case")
+            sys.exit(1)
+        cloak_data = run_sweep("optimized_cloak", p, k_vals, **sweep_kw)
 
     if ref_data is not None and cloak_data is not None:
         suffix = ""
@@ -746,11 +936,34 @@ def main():
             suffix += "_lumped"
         if args.H_factor != 1.0:
             suffix += f"_H{args.H_factor:g}"
+        if args.case in ("optimized", "optimized_vs_ref"):
+            suffix += "_optimized"
+        cloak_label = ("Optimized Cloak" if args.case in ("optimized", "optimized_vs_ref")
+                       else "Ideal Cloak")
         plot_dispersion(
             ref_data, cloak_data, p,
             out_path=out_dir / f"dispersion_comparison{suffix}.png",
             ipr_threshold=args.ipr_thr,
             f_max=args.f_max,
+            cloak_label=cloak_label,
+        )
+
+    # Additional individual figures
+    plot_kw = dict(ipr_threshold=args.ipr_thr, f_max=args.f_max)
+    if ref_data is not None:
+        plot_single(
+            ref_data, p,
+            out_path=out_dir / "dispersion_reference_vs_rayleigh.png",
+            label="Reference", marker="D", show_rayleigh=True, **plot_kw,
+        )
+    if cloak_data is not None:
+        cloak_label_single = ("Optimized Cloak"
+                              if args.case in ("optimized", "optimized_vs_ref")
+                              else "Ideal Cloak")
+        plot_single(
+            cloak_data, p,
+            out_path=out_dir / f"dispersion_{cloak_label_single.lower().replace(' ', '_')}_vs_rayleigh.png",
+            label=cloak_label_single, marker="o", show_rayleigh=True, **plot_kw,
         )
 
 
