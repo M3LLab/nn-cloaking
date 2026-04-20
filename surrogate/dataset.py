@@ -13,6 +13,7 @@ HDF5 layout (see dataset_gen/):
 so reshape(-1, n_x, n_y, ...) recovers the spatial axes.
 """
 from pathlib import Path
+from typing import Literal
 
 import h5py
 import numpy as np
@@ -21,6 +22,38 @@ from jaxtyping import Bool, Float
 from pydantic import BaseModel, ConfigDict
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
+
+LossTransform = Literal["none", "log_clip"]
+
+
+def apply_loss_transform(
+    loss: np.ndarray,
+    transform: LossTransform = "none",
+    floor: float = 1e-8,
+) -> np.ndarray:
+    """Forward loss transform. Use on the hi-fi dataset (loss spans ~18 decades).
+
+    ``log_clip``: ``log(max(loss, floor))``. Floor 1e-8 is well below the
+    ~1% quantile (~1e-12) but clips the ~2% bottom tail that reaches 1e-18,
+    which otherwise produces skew≈-1.2; with clipping skew≈-0.2, kurt≈0.2.
+    """
+    if transform == "none":
+        return loss
+    if transform == "log_clip":
+        return np.log(np.clip(loss, floor, None))
+    raise ValueError(f"Unknown loss_transform: {transform!r}")
+
+
+def invert_loss_transform(
+    y: np.ndarray | Tensor,
+    transform: LossTransform = "none",
+) -> np.ndarray | Tensor:
+    """Inverse of apply_loss_transform, for reporting predictions in raw units."""
+    if transform == "none":
+        return y
+    if transform == "log_clip":
+        return torch.exp(y) if isinstance(y, Tensor) else np.exp(y)
+    raise ValueError(f"Unknown loss_transform: {transform!r}")
 
 # jaxtyping axis names:
 #   X, Y -> n_x, n_y  (cell grid)
@@ -98,18 +131,24 @@ class SurrogateDataset(Dataset[SurrogateSample]):
         n_x: int | None = None,
         n_y: int | None = None,
         dtype: torch.dtype = torch.float32,
+        loss_transform: LossTransform = "none",
+        loss_clip_floor: float = 1e-8,
     ):
         """
         Args:
-            path:         HDF5 file produced by dataset_gen/.
-            cloak_only:   zero out non-cloak cells in the returned grid.
-                          The shape stays (n_x, n_y); only cloak cells carry values.
-            sample_types: optional category filter ("init" / "random" / "smooth" / "opt"),
-                          matched via startswith on the stored string.
-            n_x, n_y:     grid dims for reshape (ix varies slowest: idx = ix*n_y + iy).
-                          If both None, inferred as square root of n_cells.
-                          Only one can be provided; the other is derived.
-            dtype:        torch dtype for the float tensors.
+            path:            HDF5 file produced by dataset_gen/.
+            cloak_only:      zero out non-cloak cells in the returned grid.
+                             The shape stays (n_x, n_y); only cloak cells carry values.
+            sample_types:    optional category filter ("init" / "random" / "smooth" / "opt"),
+                             matched via startswith on the stored string.
+            n_x, n_y:        grid dims for reshape (ix varies slowest: idx = ix*n_y + iy).
+                             If both None, inferred as square root of n_cells.
+                             Only one can be provided; the other is derived.
+            dtype:           torch dtype for the float tensors.
+            loss_transform:  applied to ``loss`` before storing; use ``"log_clip"`` on
+                             the hi-fi dataset. ``self.loss`` then holds transformed
+                             values; use ``invert_loss_transform`` to recover raw.
+            loss_clip_floor: floor for ``log_clip`` (ignored otherwise).
         """
         with h5py.File(path, "r") as f:
             C     = f["cell_C_flat"][:]                 # (N, C_full, P)
@@ -137,11 +176,15 @@ class SurrogateDataset(Dataset[SurrogateSample]):
         rho = rho.reshape(N, self.n_x, self.n_y)
         mask_grid = mask.reshape(self.n_x, self.n_y)
 
-        self.cloak_only  = cloak_only
+        loss_t = apply_loss_transform(loss, loss_transform, floor=loss_clip_floor)
+
+        self.cloak_only      = cloak_only
+        self.loss_transform  = loss_transform
+        self.loss_clip_floor = loss_clip_floor
         self.C           = torch.from_numpy(np.ascontiguousarray(C)).to(dtype)
         self.rho         = torch.from_numpy(np.ascontiguousarray(rho)).to(dtype)
         self.f_star      = torch.from_numpy(fstr).to(dtype)
-        self.loss        = torch.from_numpy(loss).to(dtype)
+        self.loss        = torch.from_numpy(loss_t).to(dtype)
         self.sample_type = stype
         self.cloak_mask  = torch.from_numpy(np.ascontiguousarray(mask_grid))
 

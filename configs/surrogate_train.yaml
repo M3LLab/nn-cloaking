@@ -1,0 +1,26 @@
+# Base config for surrogate training.
+
+data_path: output/surrogate_dataset/surrogate_high_fidelity.h5
+out_dir: output/surrogate_train
+
+# data
+batch_size: 64
+val_fraction: 0.1
+num_workers: 2
+seed: 0
+
+# model
+z_dim: 128
+fourier_bands: 8
+decoder_hidden: 128
+f_min: 0.1
+f_max: 4.0
+
+# optimization
+lr: 1.0e-4
+weight_decay: 1.0e-5
+n_epochs: 100
+
+# checkpointing
+save_every: 10
+resume_from: null

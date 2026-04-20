@@ -9,11 +9,11 @@ Writes to ``config.out_dir``:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
+import yaml
 from pydantic import BaseModel
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
@@ -47,6 +47,13 @@ class TrainConfig(BaseModel):
     # checkpointing
     save_every: int = 10
     resume_from: str | None = None
+
+
+def load_train_config(path: str | Path) -> TrainConfig:
+    """Load a ``TrainConfig`` from a YAML file."""
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    return TrainConfig(**(data or {}))
 
 
 def _save_checkpoint(
@@ -193,5 +200,5 @@ def train(config: TrainConfig) -> tuple[ForwardFEM_CNN, dict]:
 if __name__ == "__main__":
     import sys
 
-    path = sys.argv[1] if len(sys.argv) > 1 else "output/surrogate_dataset.h5"
-    train(TrainConfig(data_path=path))
+    path = sys.argv[1] if len(sys.argv) > 1 else "configs/surrogate_train.yaml"
+    train(load_train_config(path))
