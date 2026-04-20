@@ -22,7 +22,7 @@ from jaxtyping import Float
 from pydantic import BaseModel, ConfigDict
 from torch import Tensor
 
-from surrogate.dataset import SurrogateBatch
+from surrogate.dataset import SurrogateBatch, SurrogateDataset
 from surrogate.model import (
     ConvNeXtBlock,
     FourierFeatures,
@@ -135,6 +135,15 @@ class ConvNeXtDecoder(nn.Module):
 
 
 class LatentAutoencoder(nn.Module):
+    """Frequency-aware autoencoder.
+
+    Stiffness ``C`` and density ``rho`` have very different physical scales
+    (``C`` ~1e8 Pa, ``rho`` ~1.6e3 kg/m³), so the module normalizes them on
+    entry and keeps every signature in *normalized* units — encoder, decoder
+    output, reconstruction loss all compare normalized values. Physical
+    outputs are produced only via ``decode_physical`` (used by the FEM bridge).
+    """
+
     def __init__(
         self,
         n_C_params: int,
@@ -147,6 +156,10 @@ class LatentAutoencoder(nn.Module):
         residual_hidden: int = 128,
         decoder_dims: tuple[int, int, int] = (256, 128, 64),
         perf_hidden: int = 128,
+        C_mean: Tensor | None = None,
+        C_std: Tensor | None = None,
+        rho_mean: Tensor | None = None,
+        rho_std: Tensor | None = None,
     ):
         super().__init__()
         self.n_C_params = n_C_params
@@ -175,10 +188,35 @@ class LatentAutoencoder(nn.Module):
         else:
             self.cloak_mask = None
 
+        # Normalization stats. Defaults = identity; real stats should be
+        # computed from the training dataset (see compute_norm_stats).
+        if C_mean is None:
+            C_mean = torch.zeros(n_C_params)
+        if C_std is None:
+            C_std = torch.ones(n_C_params)
+        if rho_mean is None:
+            rho_mean = torch.tensor(0.0)
+        if rho_std is None:
+            rho_std = torch.tensor(1.0)
+        self.register_buffer("C_mean", C_mean.to(torch.float32))
+        self.register_buffer("C_std", C_std.clamp_min(1e-8).to(torch.float32))
+        self.register_buffer("rho_mean", rho_mean.to(torch.float32))
+        self.register_buffer("rho_std", rho_std.clamp_min(1e-8).to(torch.float32))
+
+    # ── Normalization helpers ───────────────────────────────────────
+
+    def normalize(self, C: Tensor, rho: Tensor) -> tuple[Tensor, Tensor]:
+        """(B, X, Y, P) / (B, X, Y) → normalized units."""
+        return (C - self.C_mean) / self.C_std, (rho - self.rho_mean) / self.rho_std
+
+    def denormalize(self, C_norm: Tensor, rho_norm: Tensor) -> tuple[Tensor, Tensor]:
+        return C_norm * self.C_std + self.C_mean, rho_norm * self.rho_std + self.rho_mean
+
     # ── Encoder helpers ─────────────────────────────────────────────
 
     def _stack_input(self, batch: SurrogateBatch) -> Tensor:
-        x = torch.cat([batch.C, batch.rho.unsqueeze(-1)], dim=-1)  # B X Y (P+1)
+        C_norm, rho_norm = self.normalize(batch.C, batch.rho)
+        x = torch.cat([C_norm, rho_norm.unsqueeze(-1)], dim=-1)   # B X Y (P+1)
         return rearrange(x, "b x y c -> b c x y")
 
     def encode_raw(self, batch: SurrogateBatch) -> tuple[Tensor, Tensor]:
@@ -209,10 +247,26 @@ class LatentAutoencoder(nn.Module):
         )
 
     def decode(self, z: Tensor) -> tuple[Tensor, Tensor]:
-        """z → (C, rho). Applies cloak mask (hard-zero outside cloak) when set."""
+        """z → normalized (C_norm, rho_norm). Applies cloak mask (zero outside).
+
+        Outputs are in *normalized* units — same space the encoder sees. This is
+        what reconstruction loss compares against. For FEM use, see
+        ``decode_physical``.
+        """
         out = self.decoder(z)                            # (B, P+1, X, Y)
         out = rearrange(out, "b c x y -> b x y c")
         C, rho = out[..., : self.n_C_params], out[..., self.n_C_params]
+        if self.cloak_mask is not None:
+            C = C * self.cloak_mask[None, :, :, None]
+            rho = rho * self.cloak_mask[None, :, :]
+        return C, rho
+
+    def decode_physical(self, z: Tensor) -> tuple[Tensor, Tensor]:
+        """Decode to physical (C, rho) units — FEM-ready."""
+        C_norm, rho_norm = self.decode(z)
+        C, rho = self.denormalize(C_norm, rho_norm)
+        # Mask is applied in decode; re-apply after denormalize so non-cloak cells
+        # stay at 0 (the FEM bridge blends them with params_init).
         if self.cloak_mask is not None:
             C = C * self.cloak_mask[None, :, :, None]
             rho = rho * self.cloak_mask[None, :, :]
@@ -223,3 +277,21 @@ class LatentAutoencoder(nn.Module):
 
     def forward(self, batch: SurrogateBatch) -> EncodeOutput:
         return self.encode(batch)
+
+
+def compute_norm_stats(ds: SurrogateDataset) -> dict:
+    """Per-feature normalization stats over cloak cells of the training set.
+
+    Returns a dict of {C_mean, C_std, rho_mean, rho_std} torch tensors, ready to
+    be passed to ``LatentAutoencoder(...)``. Only cloak cells are used to avoid
+    bias from the zeroed non-cloak cells.
+    """
+    mask = ds.cloak_mask.bool()                      # (X, Y)
+    C_cloak = ds.C[:, mask, :]                       # (N, n_cloak, P)
+    rho_cloak = ds.rho[:, mask]                      # (N, n_cloak)
+    return {
+        "C_mean":   C_cloak.mean(dim=(0, 1)),
+        "C_std":    C_cloak.std(dim=(0, 1)).clamp_min(1e-8),
+        "rho_mean": rho_cloak.mean(),
+        "rho_std":  rho_cloak.std().clamp_min(1e-8),
+    }

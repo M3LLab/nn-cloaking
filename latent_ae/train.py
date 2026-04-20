@@ -26,7 +26,7 @@ from latent_ae.loss import (
     ranking_loss,
     reconstruction_loss,
 )
-from latent_ae.model import LatentAutoencoder
+from latent_ae.model import LatentAutoencoder, compute_norm_stats
 from surrogate.dataset import (
     LossTransform,
     SurrogateDataset,
@@ -122,7 +122,7 @@ def _compute_losses(
     cloak_mask,
 ):
     out = model.encode(batch)
-    L_rec = reconstruction_loss(out, batch, rho_weight=cfg.rho_weight, cloak_mask=cloak_mask)
+    L_rec = reconstruction_loss(out, batch, model, rho_weight=cfg.rho_weight, cloak_mask=cloak_mask)
     L_perf = performance_loss(out, batch)
     L_rank = ranking_loss(
         z_sh=out.z_sh, f_star=batch.f_star, loss_target=batch.loss,
@@ -216,6 +216,10 @@ def train(config: TrainConfig) -> tuple[LatentAutoencoder, dict]:
     # ── model ─────────────────────────────────────────────────────────
     n_C_params = ds.C.shape[-1]
     grid_hw = (ds.n_x, ds.n_y)
+    norm_stats = compute_norm_stats(ds)
+    print("  Normalization stats (from training set, cloak cells):")
+    print(f"    C_mean={norm_stats['C_mean'].tolist()}  C_std={norm_stats['C_std'].tolist()}")
+    print(f"    rho_mean={float(norm_stats['rho_mean']):.3e}  rho_std={float(norm_stats['rho_std']):.3e}")
     model = LatentAutoencoder(
         n_C_params=n_C_params,
         grid_hw=grid_hw,
@@ -227,6 +231,7 @@ def train(config: TrainConfig) -> tuple[LatentAutoencoder, dict]:
         residual_hidden=config.residual_hidden,
         decoder_dims=tuple(config.decoder_hidden_dims),
         perf_hidden=config.perf_hidden,
+        **norm_stats,
     ).to(device)
 
     cloak_mask = ds.cloak_mask.to(device)

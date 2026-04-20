@@ -17,22 +17,32 @@ from latent_ae.model import EncodeOutput
 def reconstruction_loss(
     out: EncodeOutput,
     batch: SurrogateBatch,
+    model,
     rho_weight: float = 1.0,
     cloak_mask: Tensor | None = None,
 ) -> Tensor:
-    """MSE on (C, rho). Restricted to cloak cells when ``cloak_mask`` is given.
+    """MSE on (C, rho) in normalized units.
+
+    The decoder emits normalized outputs (C_mean / C_std scaling), so the loss
+    must normalize the targets the same way. Restricted to cloak cells when
+    ``cloak_mask`` is given.
 
     Shapes: batch.C (B, X, Y, P), batch.rho (B, X, Y), mask (X, Y) 0/1.
     """
+    C_tgt, rho_tgt = model.normalize(batch.C, batch.rho)
+    # Non-cloak cells are zero in both the target (cloak_only=True dataset) and
+    # the prediction (decoder masking), so the zeros contribute nothing either
+    # way — we still mask out the non-cloak contribution to keep the mean
+    # focused on cloak cells.
     if cloak_mask is None:
-        mse_C = F.mse_loss(out.C_recon, batch.C)
-        mse_rho = F.mse_loss(out.rho_recon, batch.rho)
+        mse_C = F.mse_loss(out.C_recon, C_tgt)
+        mse_rho = F.mse_loss(out.rho_recon, rho_tgt)
     else:
         mask = cloak_mask.to(out.C_recon)          # (X, Y)
         n_active = mask.sum().clamp_min(1.0)
-        sq_C = (out.C_recon - batch.C).pow(2).sum(dim=-1)  # (B, X, Y) sum over params
+        sq_C = (out.C_recon - C_tgt).pow(2).sum(dim=-1)  # (B, X, Y)
         mse_C = (sq_C * mask).sum() / (out.C_recon.shape[0] * n_active * batch.C.shape[-1])
-        sq_rho = (out.rho_recon - batch.rho).pow(2)
+        sq_rho = (out.rho_recon - rho_tgt).pow(2)
         mse_rho = (sq_rho * mask).sum() / (out.rho_recon.shape[0] * n_active)
     return mse_C + rho_weight * mse_rho
 

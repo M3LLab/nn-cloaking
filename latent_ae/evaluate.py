@@ -52,6 +52,7 @@ def load_model(
         grid_hw = (ds.n_x, ds.n_y)
         cloak_mask = ds.cloak_mask
 
+    # Pull normalization buffers from the saved state_dict so model init matches.
     model = LatentAutoencoder(
         n_C_params=n_C_params,
         grid_hw=grid_hw,
@@ -63,6 +64,10 @@ def load_model(
         residual_hidden=cfg["residual_hidden"],
         decoder_dims=tuple(cfg["decoder_hidden_dims"]),
         perf_hidden=cfg["perf_hidden"],
+        C_mean=state["model"].get("C_mean"),
+        C_std=state["model"].get("C_std"),
+        rho_mean=state["model"].get("rho_mean"),
+        rho_std=state["model"].get("rho_std"),
     )
     model.load_state_dict(state["model"])
     model.to(device)
