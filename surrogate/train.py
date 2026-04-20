@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 import yaml
@@ -18,7 +19,7 @@ from pydantic import BaseModel
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 
-from surrogate.dataset import SurrogateDataset, collate_surrogate
+from surrogate.dataset import LossTransform, SurrogateDataset, collate_surrogate
 from surrogate.model import ForwardFEM_CNN
 
 
@@ -31,6 +32,8 @@ class TrainConfig(BaseModel):
     val_fraction: float = 0.1
     num_workers: int = 2
     seed: int = 0
+    loss_transform: LossTransform = "none"
+    loss_clip_floor: float = 1e-8
 
     # model
     z_dim: int = 128
@@ -87,8 +90,79 @@ def _load_checkpoint(
     return state["epoch"], state["history"]
 
 
+_VAL_METRIC_KEYS = (
+    "val_rmse", "val_r2",
+    "val_mse_log", "val_rmse_log", "val_r2_log",
+    "val_r2_bot20", "val_r2_log_bot20",
+)
+
+
 def _fresh_history() -> dict:
-    return {"train": [], "val": [], "best_val": float("inf"), "best_epoch": -1}
+    return {
+        "train": [], "val": [],
+        **{k: [] for k in _VAL_METRIC_KEYS},
+        "best_val": float("inf"), "best_epoch": -1,
+    }
+
+
+def _to_log_space(y: np.ndarray, transform: str, floor: float = 1e-8) -> np.ndarray:
+    if transform == "log_clip":
+        return y
+    if transform == "none":
+        return np.log(np.clip(y, floor, None))
+    raise ValueError(f"Unknown loss_transform: {transform!r}")
+
+
+def _r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    ss_tot = float(np.sum((y_true - y_true.mean()) ** 2))
+    if ss_tot <= 0:
+        return float("nan")
+    return float(1.0 - float(np.sum((y_pred - y_true) ** 2)) / ss_tot)
+
+
+@torch.no_grad()
+def _compute_val_metrics(
+    model: ForwardFEM_CNN,
+    loader: DataLoader,
+    device: str,
+    *,
+    loss_transform: str,
+    desc: str,
+) -> dict:
+    """One val pass: MSE (training objective) plus R²/RMSE in native and log space,
+    plus R² restricted to the bottom 20% of true loss."""
+    model.eval()
+    y_true_parts, y_pred_parts = [], []
+    pbar = tqdm(loader, desc=desc, leave=False)
+    for batch in pbar:
+        batch = batch.to(device)
+        pred = model.forward_at(batch).predicted_cloaking
+        y_true_parts.append(batch.loss.detach().cpu())
+        y_pred_parts.append(pred.detach().cpu())
+        pbar.set_postfix(loss=f"{F.mse_loss(pred, batch.loss).item():.3e}")
+    y_true = torch.cat(y_true_parts).numpy().astype(np.float64)
+    y_pred = torch.cat(y_pred_parts).numpy().astype(np.float64)
+
+    mse = float(np.mean((y_pred - y_true) ** 2))
+    rmse = float(np.sqrt(mse))
+    r2 = _r2(y_true, y_pred)
+
+    yt_log = _to_log_space(y_true, loss_transform)
+    yp_log = _to_log_space(y_pred, loss_transform)
+    mse_log = float(np.mean((yp_log - yt_log) ** 2))
+    rmse_log = float(np.sqrt(mse_log))
+    r2_log = _r2(yt_log, yp_log)
+
+    # Ordering is preserved by log_clip, so quantile on stored y_true is fine.
+    sel = y_true <= float(np.quantile(y_true, 0.20))
+    r2_bot20 = _r2(y_true[sel], y_pred[sel])
+    r2_log_bot20 = _r2(yt_log[sel], yp_log[sel])
+
+    return {
+        "mse": mse, "rmse": rmse, "r2": r2,
+        "mse_log": mse_log, "rmse_log": rmse_log, "r2_log": r2_log,
+        "r2_bot20": r2_bot20, "r2_log_bot20": r2_log_bot20,
+    }
 
 
 def _run_epoch(
@@ -129,7 +203,11 @@ def train(config: TrainConfig) -> tuple[ForwardFEM_CNN, dict]:
     (out_dir / "config.json").write_text(config.model_dump_json(indent=2))
 
     # --- data ---------------------------------------------------------------
-    ds = SurrogateDataset(config.data_path)
+    ds = SurrogateDataset(
+        config.data_path,
+        loss_transform=config.loss_transform,
+        loss_clip_floor=config.loss_clip_floor,
+    )
     n_val = max(1, int(len(ds) * config.val_fraction))
     n_train = len(ds) - n_val
     gen = torch.Generator().manual_seed(config.seed)
@@ -165,6 +243,9 @@ def train(config: TrainConfig) -> tuple[ForwardFEM_CNN, dict]:
         last_epoch, history = _load_checkpoint(
             config.resume_from, model=model, optimizer=optimizer,
         )
+        # backfill keys added in later versions so list lengths stay aligned
+        for k in _VAL_METRIC_KEYS:
+            history.setdefault(k, [])
         start_epoch = last_epoch + 1
         print(f"Resumed from {config.resume_from} (epoch {last_epoch})")
 
@@ -172,11 +253,21 @@ def train(config: TrainConfig) -> tuple[ForwardFEM_CNN, dict]:
     for epoch in range(start_epoch, config.n_epochs):
         train_loss = _run_epoch(model, train_loader, device,
                                 optimizer=optimizer, desc=f"epoch {epoch} train")
-        val_loss = _run_epoch(model, val_loader, device,
-                              optimizer=None, desc=f"epoch {epoch} val")
+        val_m = _compute_val_metrics(
+            model, val_loader, device,
+            loss_transform=ds.loss_transform, desc=f"epoch {epoch} val",
+        )
+        val_loss = val_m["mse"]
 
         history["train"].append(train_loss)
         history["val"].append(val_loss)
+        history["val_rmse"].append(val_m["rmse"])
+        history["val_r2"].append(val_m["r2"])
+        history["val_mse_log"].append(val_m["mse_log"])
+        history["val_rmse_log"].append(val_m["rmse_log"])
+        history["val_r2_log"].append(val_m["r2_log"])
+        history["val_r2_bot20"].append(val_m["r2_bot20"])
+        history["val_r2_log_bot20"].append(val_m["r2_log_bot20"])
         if val_loss < history["best_val"]:
             history["best_val"] = val_loss
             history["best_epoch"] = epoch
@@ -191,8 +282,12 @@ def train(config: TrainConfig) -> tuple[ForwardFEM_CNN, dict]:
                              model=model, optimizer=optimizer,
                              epoch=epoch, history=history)
 
-        print(f"epoch {epoch:4d}  train={train_loss:.4e}  val={val_loss:.4e}"
-              f"  best={history['best_val']:.4e}@{history['best_epoch']}")
+        print(
+            f"epoch {epoch:4d}  train={train_loss:.4e}  val={val_loss:.4e}"
+            f"  R²={val_m['r2']:+.3f}  R²_log={val_m['r2_log']:+.3f}"
+            f"  R²_bot20={val_m['r2_bot20']:+.3f}  R²_log_bot20={val_m['r2_log_bot20']:+.3f}"
+            f"  best={history['best_val']:.4e}@{history['best_epoch']}"
+        )
 
     return model, history
 
