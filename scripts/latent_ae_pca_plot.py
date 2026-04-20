@@ -16,13 +16,17 @@ import json
 import sys
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-from sklearn.decomposition import PCA
+import csv
 
-from latent_ae.evaluate import encode_dataset, load_model
-from surrogate.dataset import SurrogateDataset
+# Ensure project root is on sys.path when running as a script
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+from sklearn.decomposition import PCA  # noqa: E402
+
+from latent_ae.evaluate import encode_dataset, load_model  # noqa: E402
+from surrogate.dataset import SurrogateDataset  # noqa: E402
 
 
 def main(checkpoint_path: str) -> None:
@@ -53,14 +57,11 @@ def main(checkpoint_path: str) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Save CSV
-    df = pd.DataFrame({
-        "pc1": pc[:, 0],
-        "pc2": pc[:, 1],
-        "f_star": enc["f_star"],
-        "loss": enc["loss"],
-        "sample_type": enc["sample_type"],
-    })
-    df.to_csv(out_dir / "pca_coords.csv", index=False)
+    with open(out_dir / "pca_coords.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["pc1", "pc2", "f_star", "loss", "sample_type"])
+        for r in zip(pc[:, 0], pc[:, 1], enc["f_star"], enc["loss"], enc["sample_type"]):
+            w.writerow([float(r[0]), float(r[1]), float(r[2]), float(r[3]), str(r[4])])
 
     # ── Plot 1: colored by f_star ─────────────────────────────────────
     fig, ax = plt.subplots(figsize=(7, 6))
