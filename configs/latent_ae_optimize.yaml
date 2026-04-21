@@ -24,8 +24,8 @@ init_strategy: barycenter_of_best_per_f
 barycenter_nearest_f_tol: 0.1
 
 # optimization
-n_iters: 500
-lr: 5.0e-3
+n_iters: 1000
+lr: 5.0e-2
 lr_schedule: cosine
 lr_end: 5.0e-5
 optimizer: adam
