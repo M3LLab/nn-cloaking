@@ -210,6 +210,11 @@ def optimize(config: OptimizeConfig) -> dict:
             L_mean = per_f.mean()
             L = alpha * L_minmax + (1.0 - alpha) * L_mean
 
+            # Snapshot pre-step state so saved params match the saved loss.
+            z_snapshot = z.detach().cpu().clone()
+            C_snapshot = C_grid[0].detach().cpu().clone()
+            rho_snapshot = rho_grid[0].detach().cpu().clone()
+
             opt.zero_grad()
             L.backward()
             opt.step()
@@ -228,7 +233,7 @@ def optimize(config: OptimizeConfig) -> dict:
                 history["best_iter"] = step
                 torch.save({
                     "iter": step,
-                    "z": z.detach().cpu(),
+                    "z": z_snapshot,
                     "per_freq_loss": per_f_np,
                     "f_stars": f_stars,
                 }, out_dir / "best_z.pt")
@@ -236,9 +241,9 @@ def optimize(config: OptimizeConfig) -> dict:
             if (step + 1) % config.save_every == 0 or step == config.n_iters - 1:
                 np.savez(
                     out_dir / f"iter-{step:04d}.npz",
-                    z=z.detach().cpu().numpy(),
-                    C=C_grid[0].detach().cpu().numpy(),
-                    rho=rho_grid[0].detach().cpu().numpy(),
+                    z=z_snapshot.numpy(),
+                    C=C_snapshot.numpy(),
+                    rho=rho_snapshot.numpy(),
                     per_freq_loss=np.array(per_f_np),
                     f_stars=np.array(f_stars),
                 )

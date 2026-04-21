@@ -6,7 +6,7 @@ dataset_path: output/surrogate_dataset/surrogate_high_fidelity.h5
 out_dir: output/latent_ae_optimize_demo
 
 # FEM base config (geometry, mesh, material). Overridden per-step only for f_star.
-fem_base_config: configs/cauchy_tri.yaml
+fem_base_config: configs/cauchy_tri_top.yaml
 
 # frequency bandwidth
 f_min: 1.5
