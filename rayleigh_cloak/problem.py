@@ -248,31 +248,32 @@ def build_problem(
     """
     C0 = C_iso(params.lam, params.mu)
 
-    RayleighCloakProblem._omega = params.omega
-    RayleighCloakProblem._geometry = geometry
-    RayleighCloakProblem._is_reference = cfg.is_reference
-    RayleighCloakProblem._C0 = C0
-    RayleighCloakProblem._rho0 = params.rho0
-    RayleighCloakProblem._xi_fn = make_xi_profile(params)
-    RayleighCloakProblem._x_src = params.x_src
-    RayleighCloakProblem._sigma_src = params.sigma_src
-    RayleighCloakProblem._F0 = params.F0
-    RayleighCloakProblem._cell_decomp = cell_decomp
-    RayleighCloakProblem._n_C_params = n_C_params_override or cfg.cells.n_C_params
-    RayleighCloakProblem._source_type = cfg.source.source_type
-    RayleighCloakProblem._wave_type = cfg.source.wave_type
-    RayleighCloakProblem._lam_param = params.lam
-    RayleighCloakProblem._mu_param = params.mu
+    # Per-instance subclass so state never leaks between problems (otherwise
+    # later build_problem calls would overwrite earlier problems' _omega etc.
+    # via the shared base class, silently mixing frequencies at solve time).
+    ProblemCls = type("RayleighCloakProblemInstance", (RayleighCloakProblem,), {
+        "_omega":        params.omega,
+        "_geometry":     geometry,
+        "_is_reference": cfg.is_reference,
+        "_C0":           C0,
+        "_rho0":         params.rho0,
+        "_xi_fn":        make_xi_profile(params),
+        "_x_src":        params.x_src,
+        "_sigma_src":    params.sigma_src,
+        "_F0":           params.F0,
+        "_cell_decomp":  cell_decomp,
+        "_n_C_params":   n_C_params_override or cfg.cells.n_C_params,
+        "_source_type":  cfg.source.source_type,
+        "_wave_type":    cfg.source.wave_type,
+        "_lam_param":    params.lam,
+        "_mu_param":     params.mu,
+    })
 
-    # Surface source boundary: top for both (plane wave uses body force, not surface)
-    location_fns = [_make_top_surface(params)]
-
-    problem = RayleighCloakProblem(
+    return ProblemCls(
         mesh=mesh,
         vec=4,
         dim=2,
         ele_type=cfg.mesh.ele_type,
         dirichlet_bc_info=_make_dirichlet_bc(params),
-        location_fns=location_fns,
+        location_fns=[_make_top_surface(params)],
     )
-    return problem
