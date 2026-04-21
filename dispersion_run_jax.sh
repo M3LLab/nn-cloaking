@@ -51,6 +51,6 @@ PYTHONPATH="$(pwd)" python scripts/dispersion_jaxfem.py \
     --n-eigs 550 \
     --h-elem 0.08 \
     --h-fine 0.03 \
-    --ipr-thr 3.5 \
-    --f-max 2.5 \
+    --ipr-thr 2.5\
+    --f-max 4.0 \
     "${args[@]}"
