@@ -12,6 +12,9 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+import logging
+import contextlib
+import io
 
 import numpy as np
 import torch
@@ -20,9 +23,10 @@ from pydantic import BaseModel
 from tqdm import tqdm
 
 from latent_ae.evaluate import load_model
-from latent_ae.fem_bridge import FEMContext, MultiFreqFEMLoss, build_freq_targets
-from latent_ae.model import LatentAutoencoder
-from rayleigh_cloak.config import load_config
+with contextlib.redirect_stdout(io.StringIO()):
+    from latent_ae.fem_bridge import FEMContext, MultiFreqFEMLoss, build_freq_targets
+    from latent_ae.model import LatentAutoencoder
+    from rayleigh_cloak.config import load_config
 from surrogate.dataset import (
     SurrogateBatch,
     SurrogateDataset,
@@ -31,6 +35,8 @@ from surrogate.dataset import (
 )
 
 Schedule = str  # "none" | "linear" | "cosine"
+
+logging.getLogger("jax_fem").setLevel(logging.ERROR)
 
 
 class OptimizeConfig(BaseModel):
