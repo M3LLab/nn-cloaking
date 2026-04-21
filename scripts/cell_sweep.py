@@ -13,7 +13,7 @@ are overridden by this script.
 
 from __future__ import annotations
 
-import shutil
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -169,15 +169,29 @@ def main():
         with open(tmp_config, "w") as f:
             yaml.dump(run_cfg, f, default_flow_style=False, sort_keys=False)
 
-        # Run optimization
+        # Run optimization with early stopping
         cmd = [sys.executable, "run_optimize.py", str(tmp_config)]
         print(f"  Command: {' '.join(cmd)}")
-        ret = subprocess.run(cmd)
+        early_stopped = False
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, bufsize=1)
+        loss_pattern = re.compile(r"New best loss\s+([\d.eE+\-]+)")
+        for line in proc.stdout:
+            print(line, end="", flush=True)
+            m = loss_pattern.search(line)
+            if m and float(m.group(1)) < 1e-4:
+                print(f"  Early stop: loss {float(m.group(1)):.4e} < 1e-4, terminating.")
+                proc.terminate()
+                proc.wait()
+                early_stopped = True
+                break
+        if not early_stopped:
+            proc.wait()
 
-        if ret.returncode != 0:
-            print(f"  WARNING: run {run_tag} exited with code {ret.returncode}")
+        if proc.returncode not in (0, -15):  # -15 = SIGTERM (early stop)
+            print(f"  WARNING: run {run_tag} exited with code {proc.returncode}")
         else:
-            print(f"  Completed {run_tag}")
+            print(f"  Completed {run_tag}" + (" (early stop)" if early_stopped else ""))
 
     print(f"\n{'='*60}")
     print(f"  Cell sweep complete. Results in {base_output_dir}/")
