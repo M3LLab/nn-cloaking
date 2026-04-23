@@ -119,6 +119,21 @@ def plot_results(case_csvs: dict[str, Path], out_dir: Path) -> None:
 # ── sweep runners ─────────────────────────────────────────────────────
 
 
+def _surface_indices_at_f(cloak_mesh, geometry, dp, kept_nodes):
+    """Top-surface-beyond-cloak indices for the f-specific domain height.
+
+    Domain height (and thus ``y_top``) depends on ``f_star`` via wavelength,
+    so the evaluation surface must be rebuilt per frequency — matching what
+    ``resolve_loss_target`` does during training.
+    """
+    x_left = dp.x_off
+    x_right = dp.x_off + dp.W
+    cs_idx = get_top_surface_beyond_cloak_indices(
+        cloak_mesh.points, geometry, dp.y_top, x_left, x_right,
+    )
+    return cs_idx, kept_nodes[cs_idx]
+
+
 def _make_config_at_fstar(base_config, f_star: float):
     """Return a config copy with only f_star changed."""
     return base_config.model_copy(
@@ -149,8 +164,9 @@ def run_obstacle_sweep(
         sol_list = jax_fem_solver(problem, solver_options=solver_opts)
         u_obs = np.asarray(sol_list[0])
 
+        cs_idx, rs_idx = _surface_indices_at_f(cloak_mesh, geometry, dp, kept_nodes)
         ratio = transmitted_displacement_ratio(
-            u_obs, ref_result.u, cloak_surface_idx, ref_surface_idx,
+            u_obs, ref_result.u, cs_idx, rs_idx,
         )
         print(f"  ratio = {ratio:.4f}")
         ratios.append(ratio)
@@ -180,8 +196,9 @@ def run_ideal_sweep(
         sol_list = jax_fem_solver(problem, solver_options=solver_opts)
         u_ideal = np.asarray(sol_list[0])
 
+        cs_idx, rs_idx = _surface_indices_at_f(cloak_mesh, geometry, dp, kept_nodes)
         ratio = transmitted_displacement_ratio(
-            u_ideal, ref_result.u, cloak_surface_idx, ref_surface_idx,
+            u_ideal, ref_result.u, cs_idx, rs_idx,
         )
         print(f"  ratio = {ratio:.4f}")
         ratios.append(ratio)
@@ -223,8 +240,9 @@ def run_optimized_sweep(
         sol_list = jax_fem_solver(problem, solver_options=solver_opts)
         u_opt = np.asarray(sol_list[0])
 
+        cs_idx, rs_idx = _surface_indices_at_f(cloak_mesh, geometry, dp, kept_nodes)
         ratio = transmitted_displacement_ratio(
-            u_opt, ref_result.u, cloak_surface_idx, ref_surface_idx,
+            u_opt, ref_result.u, cs_idx, rs_idx,
         )
         print(f"  ratio = {ratio:.4f}")
         ratios.append(ratio)

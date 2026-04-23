@@ -45,7 +45,7 @@ class MeshConfig(BaseModel):
     n_pml: int = 8              # cells across each PML layer
     n_phys: int = 24            # cells across the physical region per axis (x,y,z)
     refinement_factor: int = 2  # h_fine = h_elem / refinement_factor near the cloak
-    ele_type: str = "TET4"
+    ele_type: str = "TET10"
 
 
 class SourceConfig(BaseModel):

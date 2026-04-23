@@ -107,11 +107,11 @@ def build_cell_sizes(max_nx: int, max_ny: int, min_n: int = 5,
     return sizes
 
 
-def make_f_stars_uniform(n: int = 16, f_min: float = 1.0, f_max: float = 3.0):
-    """Return n equally-spaced frequencies and uniform weights."""
-    f_stars = np.linspace(f_min, f_max, n).tolist()
-    weights = [1.0] * n
-    return [round(f, 4) for f in f_stars], weights
+# def make_f_stars_uniform(n: int = 16, f_min: float = 1.0, f_max: float = 3.0):
+#     """Return n equally-spaced frequencies and uniform weights."""
+#     f_stars = np.linspace(f_min, f_max, n).tolist()
+#     weights = [1.0] * n
+#     return [round(f, 4) for f in f_stars], weights
 
 
 def main():
@@ -134,12 +134,12 @@ def main():
         print(f"  {nx} x {ny}")
 
     # Build uniform f_stars
-    f_stars, weights = make_f_stars_uniform(16)
-    print(f"\nFrequencies ({len(f_stars)}): {f_stars[0]:.2f} .. {f_stars[-1]:.2f}")
+    # f_stars, weights = make_f_stars_uniform(16)
+    # print(f"\nFrequencies ({len(f_stars)}): {f_stars[0]:.2f} .. {f_stars[-1]:.2f}")
 
     base_output_dir = cfg_data.get("output_dir", "output/cell_sweep")
 
-    for i, (nx, ny) in enumerate(sizes):
+    for i, (nx, ny) in enumerate(sizes[::-1]):
         run_tag = f"cells_{nx}x{ny}"
         run_output = str(Path(base_output_dir) / run_tag)
 
@@ -155,9 +155,10 @@ def main():
         run_cfg["cells"]["n_y"] = ny
 
         run_cfg["loss"] = dict(cfg_data.get("loss", {}))
-        run_cfg["loss"]["multi_freq"] = dict(cfg_data["loss"].get("multi_freq", {}))
-        run_cfg["loss"]["multi_freq"]["f_stars"] = f_stars
-        run_cfg["loss"]["multi_freq"]["weights"] = weights
+        # if run_cfg["loss"].get("type") == "multi_freq":
+        #     run_cfg["loss"]["multi_freq"] = dict(cfg_data["loss"].get("multi_freq", {}))
+        #     run_cfg["loss"]["multi_freq"]["f_stars"] = f_stars
+        #     run_cfg["loss"]["multi_freq"]["weights"] = weights
 
         run_cfg["output_dir"] = run_output
 

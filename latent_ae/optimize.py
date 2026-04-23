@@ -68,6 +68,11 @@ class OptimizeConfig(BaseModel):
     lr_end: float = 5.0e-5
     optimizer: str = "adam"
 
+    # material validity penalty: weight * mean(relu(floor - x)^2) over cloak
+    # cells, applied to rho and to diagonal C-flat entries (λ/μ-like).
+    material_weight: float = 0.0
+    material_floor: float = 0.0
+
     # bookkeeping
     plot_every: int = 25
     save_every: int = 25
@@ -78,6 +83,37 @@ def load_optimize_config(path: str | Path) -> OptimizeConfig:
     with open(path) as f:
         data = yaml.safe_load(f)
     return OptimizeConfig(**(data or {}))
+
+
+# Indices of "diagonal" entries of the flat C parameterization that must
+# stay positive for a physically-admissible stiffness (normal/shear diagonals).
+# Off-diagonal couplings may legitimately be negative and are not penalized.
+_C_DIAG_INDICES: dict[int, list[int]] = {
+    2:  [0, 1],         # [λ, μ]
+    6:  [0, 1, 3, 4],   # normal-xx, normal-yy, shear-diag, shear-diag
+    10: [0, 4, 7, 9],   # diagonal of symmetric 4×4 Voigt
+    16: [0, 5, 10, 15], # diagonal of full 4×4 Voigt
+}
+
+
+def _material_penalty(
+    C: torch.Tensor,        # (X, Y, P)
+    rho: torch.Tensor,      # (X, Y)
+    cloak_mask: torch.Tensor | None,
+    floor: float,
+) -> torch.Tensor:
+    n_P = C.shape[-1]
+    if n_P not in _C_DIAG_INDICES:
+        raise ValueError(f"material_weight>0 unsupported for n_C_params={n_P}")
+    C_diag = C[..., _C_DIAG_INDICES[n_P]]                    # (X, Y, k)
+    rho_viol = torch.relu(floor - rho).pow(2)                # (X, Y)
+    C_viol = torch.relu(floor - C_diag).pow(2)               # (X, Y, k)
+    if cloak_mask is not None:
+        m = cloak_mask.to(rho.device, dtype=rho.dtype)
+        denom = m.sum().clamp_min(1.0)
+        return rho_viol.mul(m).sum() / denom \
+             + C_viol.mul(m[..., None]).sum() / (denom * C_viol.shape[-1])
+    return rho_viol.mean() + C_viol.mean()
 
 
 def _schedule(kind: Schedule, start: float, end: float, t: int, T: int) -> float:
@@ -186,6 +222,7 @@ def optimize(config: OptimizeConfig) -> dict:
         "minmax": [],
         "mean": [],
         "blended": [],
+        "material": [],
         "alpha": [],
         "lr": [],
         "f_stars": f_stars,
@@ -208,7 +245,14 @@ def optimize(config: OptimizeConfig) -> dict:
 
             L_minmax = per_f.max()
             L_mean = per_f.mean()
-            L = alpha * L_minmax + (1.0 - alpha) * L_mean
+            L_fem = alpha * L_minmax + (1.0 - alpha) * L_mean
+            if config.material_weight > 0.0:
+                L_mat = _material_penalty(
+                    C_grid[0], rho_grid[0], model.cloak_mask, config.material_floor,
+                )
+            else:
+                L_mat = torch.zeros((), device=C_grid.device)
+            L = L_fem + config.material_weight * L_mat
 
             # Snapshot pre-step state so saved params match the saved loss.
             z_snapshot = z.detach().cpu().clone()
@@ -224,6 +268,7 @@ def optimize(config: OptimizeConfig) -> dict:
             history["minmax"].append(float(L_minmax.item()))
             history["mean"].append(float(L_mean.item()))
             history["blended"].append(float(L.item()))
+            history["material"].append(float(L_mat.item()))
             history["alpha"].append(float(alpha))
             history["lr"].append(float(cur_lr))
 
@@ -252,7 +297,7 @@ def optimize(config: OptimizeConfig) -> dict:
             print(
                 f"  step {step:4d} α={alpha:.3f} lr={cur_lr:.2e}  "
                 f"minmax={L_minmax.item():.4e} mean={L_mean.item():.4e} "
-                f"blend={L.item():.4e}  [{per_f_str}]"
+                f"mat={L_mat.item():.4e} blend={L.item():.4e}  [{per_f_str}]"
             )
 
             (out_dir / "history.json").write_text(json.dumps(history, indent=2))

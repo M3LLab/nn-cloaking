@@ -86,6 +86,8 @@ def generate_mesh_full(
     gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
 
     gmsh.model.mesh.generate(3)
+    if cfg.mesh.ele_type == "TET10":
+        gmsh.model.mesh.setOrder(2)
 
     os.makedirs(cfg.output_dir, exist_ok=True)
     msh_path = os.path.join(cfg.output_dir, "_cloak_mesh_3d_full.msh")
@@ -94,7 +96,8 @@ def generate_mesh_full(
 
     msh = meshio.read(msh_path)
     points = msh.points
-    cells = msh.cells_dict["tetra"]
+    cells_key = "tetra10" if cfg.mesh.ele_type == "TET10" else "tetra"
+    cells = msh.cells_dict[cells_key]
 
     return Mesh(points, cells, ele_type=cfg.mesh.ele_type)
 
@@ -115,7 +118,7 @@ def extract_submesh(
     points = np.asarray(mesh.points)
     cells = np.asarray(mesh.cells)
 
-    centroids = points[cells].mean(axis=1)   # (n_elem, 3)
+    centroids = points[cells[:, :4]].mean(axis=1)   # 4 corner nodes (TET4 and TET10)
 
     keep = np.array([
         not bool(geometry.in_defect(jnp.array(c)))
