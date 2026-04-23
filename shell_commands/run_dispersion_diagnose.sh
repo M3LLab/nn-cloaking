@@ -22,7 +22,7 @@
 #   ./run_dispersion_diagnose.sh <cfg> <npz> --ipr-thr 2.0 -f
 
 set -e
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 CONFIG=""
 PARAMS=""
@@ -115,7 +115,7 @@ echo
 echo "=============================================================="
 echo " Run A:  reference + ideal analytic cloak  (--case both)"
 echo "=============================================================="
-./dispersion_run_jax.sh "$CONFIG" --case both --ipr-thr "$IPR_THR" --f-max "$F_MAX" $FORCE
+./shell_commands/dispersion_run_jax.sh "$CONFIG" --case both --ipr-thr "$IPR_THR" --f-max "$F_MAX" $FORCE
 clean_single_plots
 # Rename so run B doesn't overwrite and name is self-describing
 if [[ -f "$OUTDIR/dispersion_comparison.png" ]]; then
@@ -128,7 +128,7 @@ echo
 echo "=============================================================="
 echo " Run B:  reference + optimized cloak  (--case optimized_vs_ref)"
 echo "=============================================================="
-./dispersion_run_jax.sh "$CONFIG" \
+./shell_commands/dispersion_run_jax.sh "$CONFIG" \
     --params-npz "$PARAMS" \
     --n-C-params "$NC" \
     --case optimized_vs_ref \

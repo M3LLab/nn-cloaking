@@ -10,7 +10,7 @@
 #   ./run_ideal_sweep.sh -f        # force re-run even if CSV exists
 
 set -e
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 PYTHONPATH="$(pwd)" python scripts/frequency_sweep.py \
     --no-obstacle --no-optimized \

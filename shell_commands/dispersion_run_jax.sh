@@ -21,7 +21,7 @@
 #       --case optimized_vs_ref
 
 set -e
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 # Parse: first positional .yaml arg → config, rest passed through.
 config=""
@@ -45,7 +45,7 @@ if [[ -z "$config" ]]; then
     config="configs/continuous.yaml"
 fi
 
-PYTHONPATH="$(pwd)" python scripts/dispersion_jaxfem.py \
+PYTHONPATH="$(pwd)" python scripts/dispersion/dispersion_jaxfem.py \
     "$config" \
     --n-kpts 50 \
     --n-eigs 550 \

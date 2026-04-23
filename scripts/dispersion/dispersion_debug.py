@@ -30,9 +30,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from scripts.dispersion_ideal import derive_params, run_sweep
+from scripts.dispersion.dispersion_ideal import derive_params, run_sweep
 
 
 # ── helpers ──────────────────────────────────────────────────────────────

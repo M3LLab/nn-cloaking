@@ -12,7 +12,7 @@
 #   ./run_dispersion.sh --h-elem 0.12   # coarser mesh, faster
 
 set -e
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 # Translate shorthand flags for the Python script.
 # -f        → --force
@@ -28,7 +28,7 @@ done
 #   unit-cell H = 4.305 λ*, L_c = 2.0 λ* (implicit, BZ edge k*=0.25),
 #   a = 0.0774 H, c = 0.1545 H, b = 3a ≈ λ* ;
 #   IPR > 3.5 to distinguish surface modes; >500 eigenvalues per k to reach f*=2.5.
-PYTHONPATH="$(pwd)" python scripts/dispersion_ideal.py \
+PYTHONPATH="$(pwd)" python scripts/dispersion/dispersion_ideal.py \
     --n-kpts 50 \
     --n-eigs 550 \
     --h-elem 0.08 \
