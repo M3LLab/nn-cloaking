@@ -16,23 +16,44 @@
 #
 # Usage:
 #   ./run_dispersion_diagnose.sh
-#   ./run_dispersion_diagnose.sh -f          # force re-run of cached .npz sweeps
-#   ./run_dispersion_diagnose.sh <config.yaml> <params.npz>   # custom inputs
+#   ./run_dispersion_diagnose.sh -f                               # force rerun
+#   ./run_dispersion_diagnose.sh <config.yaml> <params.npz>       # custom inputs
+#   ./run_dispersion_diagnose.sh --ipr-thr 3.0 --f-max 3.0        # plot bounds
+#   ./run_dispersion_diagnose.sh <cfg> <npz> --ipr-thr 2.0 -f
 
 set -e
 cd "$(dirname "$0")"
 
-CONFIG="${1:-best_configs/latest/latent_ae_optimize_sweep.yaml}"
-PARAMS="${2:-best_configs/latest/optimized_params.npz}"
+CONFIG=""
+PARAMS=""
 FORCE=""
-for arg in "$@"; do
-    [[ "$arg" == "-f" ]] && FORCE="-f"
+IPR_THR="2.5"
+F_MAX="4.0"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -f|--force)   FORCE="-f"; shift ;;
+        --ipr-thr)    IPR_THR="$2"; shift 2 ;;
+        --f-max)      F_MAX="$2"; shift 2 ;;
+        *)
+            if [[ -z "$CONFIG" ]]; then
+                CONFIG="$1"
+            elif [[ -z "$PARAMS" ]]; then
+                PARAMS="$1"
+            fi
+            shift ;;
+    esac
 done
+
+CONFIG="${CONFIG:-best_configs/latest/latent_ae_optimize_sweep.yaml}"
+PARAMS="${PARAMS:-best_configs/latest/optimized_params.npz}"
 
 echo "=============================================================="
 echo " Config:         $CONFIG"
 echo " Optimized npz:  $PARAMS"
 echo " Force rerun:    ${FORCE:-no}"
+echo " IPR threshold:  $IPR_THR"
+echo " f* max:         $F_MAX"
 echo "=============================================================="
 
 # ── 1. Inspect optimized params ───────────────────────────────────────
@@ -94,7 +115,7 @@ echo
 echo "=============================================================="
 echo " Run A:  reference + ideal analytic cloak  (--case both)"
 echo "=============================================================="
-./dispersion_run_jax.sh "$CONFIG" --case both $FORCE
+./dispersion_run_jax.sh "$CONFIG" --case both --ipr-thr "$IPR_THR" --f-max "$F_MAX" $FORCE
 clean_single_plots
 # Rename so run B doesn't overwrite and name is self-describing
 if [[ -f "$OUTDIR/dispersion_comparison.png" ]]; then
@@ -111,6 +132,8 @@ echo "=============================================================="
     --params-npz "$PARAMS" \
     --n-C-params "$NC" \
     --case optimized_vs_ref \
+    --ipr-thr "$IPR_THR" \
+    --f-max "$F_MAX" \
     $FORCE
 clean_single_plots
 if [[ -f "$OUTDIR/dispersion_comparison_optimized.png" ]]; then
@@ -124,7 +147,7 @@ echo
 echo "=============================================================="
 echo " Plot C:  ideal cloak vs optimized cloak"
 echo "=============================================================="
-PYTHONPATH="$(pwd)" python - "$CONFIG" <<'PY'
+PYTHONPATH="$(pwd)" python - "$CONFIG" "$IPR_THR" "$F_MAX" <<'PY'
 import sys, pathlib, numpy as np, yaml
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -132,6 +155,8 @@ import matplotlib.cm as cm
 from matplotlib.colors import Normalize
 
 cfg = yaml.safe_load(open(sys.argv[1]))
+ipr_thr = float(sys.argv[2])
+f_max   = float(sys.argv[3])
 out_dir = pathlib.Path(cfg["output_dir"]) / "dispersion"
 
 # Matches dispersion_run_jax.sh defaults (h-elem 0.08, h-fine 0.03)
@@ -146,7 +171,7 @@ opt   = np.load(opt_npz)
 
 # Rayleigh-line drawing needs BZ edge; L_c = 2*lambda_star ⇒ k_edge_norm = 0.25.
 k_edge = 0.25
-f_max, ipr_thr, ipr_cap = 4.0, 2.5, 15.0
+ipr_cap = 15.0
 
 plt.rcParams.update({
     "font.family": "DejaVu Sans",
