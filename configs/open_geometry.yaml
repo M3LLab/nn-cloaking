@@ -1,0 +1,77 @@
+# Open-geometry cloak optimisation: joint shape + material on a fixed cell grid.
+#
+# Shape is a trainable per-cell logit; mask = sigmoid(beta * logit) blends the
+# trainable cell material toward the isotropic background.  Initialised from
+# the triangular cloak, then free to evolve.
+#
+# Usage:
+#   python run_optimize_open_geometry.py configs/open_geometry.yaml
+
+is_reference: false
+geometry_type: triangular
+
+material:
+  rho0: 1600.0
+  cs: 300.0
+
+domain:
+  f_star: 2.0
+  lambda_star: 1.0
+  H_factor: 4.305
+  W_factor: 12.5
+
+geometry:
+  a_factor: 0.0774
+  b_factor: 3.0
+  c_factor: 0.1545
+
+absorbing:
+  L_pml_factor: 1.0
+  xi_max: 4.0
+  pml_pow: 2
+
+mesh:
+  n_pml_x: 32
+  n_pml_y: 32
+  nx_phys: 50
+  ny_phys: 30
+  refinement_factor: 4
+  ele_type: TRI3
+
+source:
+  x_src_factor: 0.05
+  sigma_factor: 0.01
+  F0: 1.0
+
+solver:
+  ksp_type: preonly
+  pc_type: lu
+
+cells:
+  enabled: true
+  n_x: 50
+  n_y: 50
+  n_C_params: 6
+
+loss:
+  type: right_boundary
+
+optimization:
+  method: raw          # unused here; open-geometry has its own loop
+  n_iters: 500
+  lr: 0.5
+  lambda_l2: 0.001
+  lambda_neighbor: 0.001
+  plot_every: 50
+  init_params: ""      # warm-start .npz; may include shape_logits
+
+# Open-geometry extras.  Read directly by rayleigh_cloak/open_geometry.py —
+# ignored by SimulationConfig.
+shape_opt:
+  beta: 1.0              # sigmoid sharpness; raise to sharpen the mask edge
+  init_magnitude: 3.0    # |logit| at init (sigmoid(3) ≈ 0.95)
+  logits_lr_mult: 1.0    # logits LR = optimization.lr * this
+  lambda_mask_smooth: 1.0e-2
+  plot_mask_every: 25    # 0 = disabled
+
+output_dir: output/open_geometry
