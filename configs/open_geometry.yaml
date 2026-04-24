@@ -68,10 +68,22 @@ optimization:
 # Open-geometry extras.  Read directly by rayleigh_cloak/open_geometry.py —
 # ignored by SimulationConfig.
 shape_opt:
-  beta: 1.0              # sigmoid sharpness; raise to sharpen the mask edge
+  # Sigmoid sharpness.  With beta_end set, β ramps linearly from `beta` to
+  # `beta_end` across n_iters — β-continuation is the standard way to get
+  # crisp masks without killing gradients early.
+  beta: 1.0
+  beta_end: null         # e.g. 8.0 to anneal toward binary
   init_magnitude: 3.0    # |logit| at init (sigmoid(3) ≈ 0.95)
   logits_lr_mult: 1.0    # logits LR = optimization.lr * this
-  lambda_mask_smooth: 1.0e-2
-  plot_mask_every: 25    # 0 = disabled
+  # Regularisers / penalties
+  lambda_mask_smooth: 1.0e-2   # TV on logits (perimeter-like)
+  lambda_bin: 0.0              # mean(m·(1-m)) — pulls m toward {0, 1}
+  # Shape-side tricks (topology-opt classics)
+  simp_p: 1.0                  # exponent on m in the material blend; 3 for SIMP-style
+  smooth_sigma: 0.0            # Gaussian filter σ (cells) on logits; 1-2 suppresses islands
+  # Output
+  plot_mask_every: 25          # 0 = disabled
+  project_final: true          # save largest-CC "manufacturable" mask at the end
+  project_connectivity: 1      # 1 = 4-connected, 2 = 8-connected
 
 output_dir: output/open_geometry

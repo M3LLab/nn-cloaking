@@ -28,13 +28,15 @@ from rayleigh_cloak.open_geometry import (
     ShapeOptConfig,
     solve_optimization_open_geometry,
 )
+from rayleigh_cloak.shape_mask import largest_connected_component
 
 logging.getLogger("jax_fem").setLevel(logging.WARNING)
 
 
 def _plot_loss(result, save_path: Path) -> None:
     steps = np.arange(len(result.loss_history))
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(9, 8), sharex=True)
+    ax1, ax2, ax3 = axes
 
     ax1.semilogy(steps, result.loss_history, "k-", lw=1.5, label="total")
     ax1.semilogy(steps, result.cloak_history, "C0-", lw=1, label="cloak")
@@ -45,10 +47,22 @@ def _plot_loss(result, save_path: Path) -> None:
     ax2.semilogy(steps, result.l2_history, "C1-", lw=1, label="L2 drift")
     ax2.semilogy(steps, result.neighbor_history, "C2-", lw=1, label="material TV")
     ax2.semilogy(steps, result.mask_smooth_history, "C3-", lw=1, label="mask TV")
-    ax2.set_xlabel("Step")
+    if any(v > 0 for v in result.bin_history):
+        ax2.semilogy(steps, result.bin_history, "C4-", lw=1, label="binarisation")
     ax2.set_ylabel("Regularisation")
     ax2.legend()
     ax2.grid(True, alpha=0.3)
+
+    if result.beta_history and max(result.beta_history) > min(result.beta_history):
+        ax3.plot(steps, result.beta_history, "C5-", lw=1.5, label="β")
+        ax3.set_ylabel("β (sigmoid sharpness)")
+        ax3.set_xlabel("Step")
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+    else:
+        # β constant — hide the panel
+        ax3.set_visible(False)
+        ax2.set_xlabel("Step")
 
     fig.tight_layout()
     fig.savefig(save_path, bbox_inches="tight")
@@ -56,15 +70,13 @@ def _plot_loss(result, save_path: Path) -> None:
 
 
 def _plot_mask(mask_grid: np.ndarray, save_path: Path, step: int | None = None,
-               title_suffix: str = "") -> None:
-    """Plot a ``(n_x, n_y)`` mask array as a heatmap.
-
-    Display convention: x horizontal, y vertical, origin lower-left — same as
-    the existing displacement-field plots.
-    """
+               title_suffix: str = "", cmap: str = "magma",
+               vmin: float = 0.0, vmax: float = 1.0,
+               label: str = "mask = sigmoid(β·logit)") -> None:
+    """Plot a ``(n_x, n_y)`` mask array as a heatmap."""
     fig, ax = plt.subplots(figsize=(6, 6))
-    im = ax.pcolormesh(mask_grid.T, shading="auto", cmap="magma", vmin=0.0, vmax=1.0)
-    fig.colorbar(im, ax=ax, label="mask = sigmoid(β·logit)")
+    im = ax.pcolormesh(mask_grid.T, shading="auto", cmap=cmap, vmin=vmin, vmax=vmax)
+    fig.colorbar(im, ax=ax, label=label)
     ax.set_aspect("equal")
     title = "Shape mask" + title_suffix
     if step is not None:
@@ -94,17 +106,27 @@ def main(config_path: str = "configs/open_geometry.yaml") -> None:
         mask_dir.mkdir(exist_ok=True)
 
     loss_csv = open(out / "loss_history.csv", "w")
-    loss_csv.write("step,total,cloak,l2,material_tv,mask_tv,mask_solid_frac\n")
+    loss_csv.write(
+        "step,beta,total,cloak,l2,material_tv,mask_tv,bin,mask_solid_frac\n"
+    )
     loss_csv.flush()
 
     best_loss = [float("inf")]
 
-    def _step_cb(step, total, cloak, l2, nb, tv, state):
+    def _step_cb(step, total, cloak, l2, nb, tv, bin_, beta_t, state):
         import jax
-        m = np.asarray(jax.nn.sigmoid(shape_cfg.beta * state["logits"]))
+        from rayleigh_cloak.shape_mask import smooth_logits
+        # Effective mask mirrors what the FEM actually sees
+        s_eff = smooth_logits(
+            state["logits"], config.cells.n_x, config.cells.n_y,
+            shape_cfg.smooth_sigma,
+        )
+        m = np.asarray(jax.nn.sigmoid(beta_t * s_eff))
         solid_frac = float((m > 0.5).mean())
-        loss_csv.write(f"{step},{total:.8e},{cloak:.8e},{l2:.8e},"
-                       f"{nb:.8e},{tv:.8e},{solid_frac:.6f}\n")
+        loss_csv.write(
+            f"{step},{beta_t:.4f},{total:.8e},{cloak:.8e},"
+            f"{l2:.8e},{nb:.8e},{tv:.8e},{bin_:.8e},{solid_frac:.6f}\n"
+        )
         loss_csv.flush()
         if total < best_loss[0]:
             best_loss[0] = total
@@ -114,7 +136,7 @@ def main(config_path: str = "configs/open_geometry.yaml") -> None:
                 cell_rho=np.asarray(state["rho"]),
                 shape_logits=np.asarray(state["logits"]),
                 shape_mask=m,
-                beta=shape_cfg.beta,
+                beta=float(beta_t),
                 n_x=config.cells.n_x,
                 n_y=config.cells.n_y,
             )
@@ -145,7 +167,7 @@ def main(config_path: str = "configs/open_geometry.yaml") -> None:
         cell_rho=np.asarray(result.cell_rho),
         shape_logits=np.asarray(result.shape_logits),
         shape_mask=np.asarray(result.shape_mask),
-        beta=shape_cfg.beta,
+        beta=result.beta_end,
         n_x=result.n_x,
         n_y=result.n_y,
     )
@@ -157,6 +179,38 @@ def main(config_path: str = "configs/open_geometry.yaml") -> None:
 
     _plot_loss(result, out / "loss_curves.pdf")
     print(f"  Loss plot: {out / 'loss_curves.pdf'}")
+
+    # Post-hoc: largest connected component — a manufacturable single-body mask
+    if shape_cfg.project_final:
+        projected = largest_connected_component(
+            final_mask_grid, connectivity=shape_cfg.project_connectivity,
+        )
+        n_solid = int(projected.sum())
+        n_discarded = int((final_mask_grid > 0.5).sum()) - n_solid
+        print(
+            f"  Projected mask: largest component keeps {n_solid} cells, "
+            f"discards {n_discarded} (conn={shape_cfg.project_connectivity})"
+        )
+        np.savez(
+            out / "optimized_params_projected.npz",
+            cell_C_flat=np.asarray(result.cell_C_flat),
+            cell_rho=np.asarray(result.cell_rho),
+            shape_logits=np.asarray(result.shape_logits),
+            shape_mask=projected.ravel().astype(np.float32),
+            shape_mask_soft=np.asarray(result.shape_mask),
+            beta=result.beta_end,
+            n_x=result.n_x,
+            n_y=result.n_y,
+            project_connectivity=shape_cfg.project_connectivity,
+        )
+        _plot_mask(
+            projected.astype(float), out / "shape_mask_projected.png",
+            title_suffix=" (projected, largest CC)",
+            cmap="gray_r", label="mask ∈ {0, 1}",
+        )
+        print(f"  Projected artefacts: "
+              f"{out / 'optimized_params_projected.npz'} + "
+              f"{out / 'shape_mask_projected.png'}")
 
 
 if __name__ == "__main__":

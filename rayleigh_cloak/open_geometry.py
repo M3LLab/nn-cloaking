@@ -40,9 +40,11 @@ from rayleigh_cloak.problem import build_problem
 from rayleigh_cloak.shape_mask import (
     all_neighbor_pairs,
     apply_shape_mask,
+    binarization_penalty,
     init_logits_from_cloak_mask,
     mask_smoothness,
     occupancy,
+    smooth_logits,
 )
 from rayleigh_cloak.solver import (
     _create_geometry,
@@ -60,12 +62,22 @@ class ShapeOptConfig:
 
     Populated from the YAML's top-level ``shape_opt:`` block (optional).
     Kept as a plain dataclass so we don't touch :mod:`rayleigh_cloak.config`.
+
+    Defaults preserve the plain-sigmoid baseline (SIMP p = 1, no filter, no
+    binarisation penalty, constant β).  Turn knobs on for sharper, more
+    manufacturable masks.
     """
-    beta: float = 1.0                # sigmoid sharpness
+    beta: float = 1.0                # sigmoid sharpness (β_start if _end unset)
+    beta_end: float | None = None    # if set, linearly ramp β → β_end over n_iters
     init_magnitude: float = 3.0      # |logit| at init (inside/outside cloak)
     logits_lr_mult: float = 1.0      # logits LR = material lr * this
     lambda_mask_smooth: float = 1e-2 # TV penalty on logits
+    lambda_bin: float = 0.0          # binarisation penalty weight (mean m(1-m))
+    simp_p: float = 1.0              # SIMP exponent on occupancy (1 = convex blend)
+    smooth_sigma: float = 0.0        # Gaussian filter σ on logits (0 = off)
     plot_mask_every: int = 10        # 0 = never
+    project_final: bool = True       # save largest-connected-component artefacts
+    project_connectivity: int = 1    # 1 = 4-conn, 2 = 8-conn (for final projection)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ShapeOptConfig":
@@ -74,6 +86,13 @@ class ShapeOptConfig:
         raw = data.get("shape_opt", {}) or {}
         known = {k: raw[k] for k in cls.__dataclass_fields__ if k in raw}
         return cls(**known)
+
+    def resolve_beta(self, step: int, n_iters: int) -> float:
+        """Current β for a given step (linear ramp if ``beta_end`` is set)."""
+        if self.beta_end is None or n_iters <= 1:
+            return float(self.beta)
+        t = step / (n_iters - 1)
+        return float(self.beta + (self.beta_end - self.beta) * t)
 
 
 # ── result ───────────────────────────────────────────────────────────
@@ -84,15 +103,18 @@ class OpenGeometryResult:
     """Outcome of a joint shape + material optimisation run."""
     cell_C_flat: jnp.ndarray
     cell_rho: jnp.ndarray
-    shape_logits: jnp.ndarray
-    shape_mask: jnp.ndarray          # sigmoid(beta * logits) — final occupancy
+    shape_logits: jnp.ndarray         # post-training raw logits (pre-filter)
+    shape_mask: jnp.ndarray           # final occupancy σ(β_end · filter(logits))
     n_x: int
     n_y: int
+    beta_end: float = 1.0             # the β used to compute the final mask
     loss_history: list[float] = field(default_factory=list)
     cloak_history: list[float] = field(default_factory=list)
     l2_history: list[float] = field(default_factory=list)
     neighbor_history: list[float] = field(default_factory=list)
     mask_smooth_history: list[float] = field(default_factory=list)
+    bin_history: list[float] = field(default_factory=list)
+    beta_history: list[float] = field(default_factory=list)
 
 
 # ── optimisation loop ────────────────────────────────────────────────
@@ -110,24 +132,25 @@ def run_optimization_open_geometry(
     rho0: float,
     n_x: int,
     n_y: int,
-    beta: float,
+    shape_cfg: ShapeOptConfig,
     n_iters: int,
     lr: float,
-    logits_lr_mult: float,
     lambda_l2: float,
     lambda_neighbor: float,
-    lambda_mask_smooth: float,
     loss_fn: Callable | None = None,
     step_callback: Callable | None = None,
     mask_callback: Callable | None = None,
-    mask_every: int = 10,
 ) -> OpenGeometryResult:
     """Adam loop over ``(cell_C_flat, cell_rho, logits)``.
 
-    Material gradients use the mask-blended effective arrays (``m·C + (1-m)·C0``
+    Material gradients use the mask-blended effective arrays (``m^p·C + (1−m^p)·C₀``
     and similarly for rho), so cells currently "outside" the shape get naturally
     small material gradients — shape decides where material matters, then
     material fine-tunes where shape has committed.
+
+    β is looked up each step from :meth:`ShapeOptConfig.resolve_beta` and
+    passed to the loss as a traced scalar, so a linear β ramp does not
+    trigger re-tracing.
     """
     if loss_fn is None:
         loss_fn = cloaking_loss
@@ -143,11 +166,22 @@ def run_optimization_open_geometry(
         "rho": jnp.asarray(rho_init),
         "logits": jnp.asarray(logits_init),
     }
-    material_init = (state["C"], state["rho"])  # regs measure drift from push-forward init
+    material_init = (state["C"], state["rho"])
 
-    def combined_loss(s: dict[str, jnp.ndarray]) -> jnp.ndarray:
+    # Static knobs (closed over; not traced):
+    simp_p = float(shape_cfg.simp_p)
+    sigma = float(shape_cfg.smooth_sigma)
+    lambda_mask_smooth = float(shape_cfg.lambda_mask_smooth)
+    lambda_bin = float(shape_cfg.lambda_bin)
+    logit_scale = float(shape_cfg.logits_lr_mult)
+
+    def _effective_logits(raw_logits: jnp.ndarray) -> jnp.ndarray:
+        return smooth_logits(raw_logits, n_x, n_y, sigma)
+
+    def combined_loss(s: dict[str, jnp.ndarray], beta: jnp.ndarray) -> jnp.ndarray:
+        s_eff = _effective_logits(s["logits"])
         C_eff, rho_eff = apply_shape_mask(
-            s["C"], s["rho"], s["logits"], C0, rho0, beta=beta,
+            s["C"], s["rho"], s_eff, C0, rho0, beta=beta, simp_p=simp_p,
         )
         sol_list = fwd_pred((C_eff, rho_eff))
         u_cloak = sol_list[0]
@@ -155,14 +189,17 @@ def run_optimization_open_geometry(
         L_l2 = l2_regularization((s["C"], s["rho"]), material_init)
         L_nb = neighbor_regularization((s["C"], s["rho"]), nb_pairs)
         L_mask = mask_smoothness(s["logits"], mask_pairs)
+        m_eff = occupancy(s_eff, beta)
+        L_bin = binarization_penalty(m_eff)
         return (
             L_cloak
             + lambda_l2 * L_l2
             + lambda_neighbor * L_nb
             + lambda_mask_smooth * L_mask
+            + lambda_bin * L_bin
         )
 
-    loss_and_grad = jax.value_and_grad(combined_loss)
+    loss_and_grad = jax.value_and_grad(combined_loss, argnums=0)
     opt_state = adam_init(state)
 
     loss_hist: list[float] = []
@@ -170,45 +207,57 @@ def run_optimization_open_geometry(
     l2_hist: list[float] = []
     nb_hist: list[float] = []
     mask_hist: list[float] = []
-
-    logit_scale = logits_lr_mult  # applied per-step to logit gradients
+    bin_hist: list[float] = []
+    beta_hist: list[float] = []
 
     for step in range(n_iters):
-        loss_val, grads = loss_and_grad(state)
+        beta_t = shape_cfg.resolve_beta(step, n_iters)
+        beta_jnp = jnp.float32(beta_t)
+
+        loss_val, grads = loss_and_grad(state, beta_jnp)
         loss_val_f = float(loss_val)
         loss_hist.append(loss_val_f)
 
-        # Break out component values (cheap — no forward solve)
+        # Component breakdown — cheap (no forward solve)
+        s_eff = _effective_logits(state["logits"])
+        m_eff = occupancy(s_eff, beta_jnp)
         L_l2_f = float(l2_regularization((state["C"], state["rho"]), material_init))
         L_nb_f = float(neighbor_regularization((state["C"], state["rho"]), nb_pairs))
         L_mask_f = float(mask_smoothness(state["logits"], mask_pairs))
+        L_bin_f = float(binarization_penalty(m_eff))
         L_cloak_f = (
             loss_val_f
             - lambda_l2 * L_l2_f
             - lambda_neighbor * L_nb_f
             - lambda_mask_smooth * L_mask_f
+            - lambda_bin * L_bin_f
         )
         cloak_hist.append(L_cloak_f)
         l2_hist.append(L_l2_f)
         nb_hist.append(L_nb_f)
         mask_hist.append(L_mask_f)
+        bin_hist.append(L_bin_f)
+        beta_hist.append(beta_t)
 
-        m_vals = np.asarray(occupancy(state["logits"], beta))
+        m_vals = np.asarray(m_eff)
+        grey = float(((m_vals > 0.1) & (m_vals < 0.9)).mean())
         print(
-            f"  Step {step:4d} | total = {loss_val_f:.4e}"
+            f"  Step {step:4d} | β={beta_t:4.2f}"
+            f"  total = {loss_val_f:.4e}"
             f"  cloak = {L_cloak_f:.4e}"
             f"  cloak_pct = {np.sqrt(max(L_cloak_f, 0.0)) * 100:.2e}"
-            f"  L2 = {L_l2_f:.4e}  nb = {L_nb_f:.4e}  tv(s) = {L_mask_f:.4e}"
-            f"  mask_mean = {m_vals.mean():.3f}  mask_solid = "
-            f"{(m_vals > 0.5).sum()}/{m_vals.size}"
+            f"  tv(s) = {L_mask_f:.4e}  bin = {L_bin_f:.4e}"
+            f"  solid = {(m_vals > 0.5).sum()}/{m_vals.size}  grey = {grey:.2%}"
         )
 
         if step_callback is not None:
             step_callback(
-                step, loss_val_f, L_cloak_f, L_l2_f, L_nb_f, L_mask_f, state,
+                step, loss_val_f, L_cloak_f, L_l2_f, L_nb_f,
+                L_mask_f, L_bin_f, beta_t, state,
             )
 
-        if mask_callback is not None and mask_every > 0 and step % mask_every == 0:
+        if (mask_callback is not None and shape_cfg.plot_mask_every > 0
+                and step % shape_cfg.plot_mask_every == 0):
             mask_callback(step, np.asarray(m_vals).reshape(n_x, n_y))
 
         if logit_scale != 1.0:
@@ -218,7 +267,10 @@ def run_optimization_open_geometry(
         updates, opt_state = adam_update(grads, opt_state, lr=lr)
         state = jax.tree.map(lambda p, u: p + u, state, updates)
 
-    final_mask = np.asarray(occupancy(state["logits"], beta))
+    # Final mask uses the end-of-schedule β
+    beta_final = shape_cfg.resolve_beta(n_iters - 1, n_iters)
+    final_s_eff = _effective_logits(state["logits"])
+    final_mask = np.asarray(occupancy(final_s_eff, jnp.float32(beta_final)))
     if mask_callback is not None:
         mask_callback(n_iters, final_mask.reshape(n_x, n_y))
 
@@ -229,11 +281,14 @@ def run_optimization_open_geometry(
         shape_mask=jnp.asarray(final_mask),
         n_x=n_x,
         n_y=n_y,
+        beta_end=beta_final,
         loss_history=loss_hist,
         cloak_history=cloak_hist,
         l2_history=l2_hist,
         neighbor_history=nb_hist,
         mask_smooth_history=mask_hist,
+        bin_history=bin_hist,
+        beta_history=beta_hist,
     )
 
 
@@ -323,6 +378,12 @@ def solve_optimization_open_geometry(
 
     print("=== Step 7: Optimising ===")
     opt_cfg = config.optimization
+    beta_end = shape_cfg.beta if shape_cfg.beta_end is None else shape_cfg.beta_end
+    print(
+        f"  β schedule: {shape_cfg.beta} → {beta_end}  |  "
+        f"SIMP p = {shape_cfg.simp_p}  |  smooth σ = {shape_cfg.smooth_sigma}  |  "
+        f"λ_bin = {shape_cfg.lambda_bin}"
+    )
     return run_optimization_open_geometry(
         fwd_pred=fwd_pred,
         cell_params_init=params_init,
@@ -335,15 +396,12 @@ def solve_optimization_open_geometry(
         rho0=float(params.rho0),
         n_x=cell_decomp.n_x,
         n_y=cell_decomp.n_y,
-        beta=shape_cfg.beta,
+        shape_cfg=shape_cfg,
         n_iters=opt_cfg.n_iters,
         lr=opt_cfg.lr,
-        logits_lr_mult=shape_cfg.logits_lr_mult,
         lambda_l2=opt_cfg.lambda_l2,
         lambda_neighbor=opt_cfg.lambda_neighbor,
-        lambda_mask_smooth=shape_cfg.lambda_mask_smooth,
         loss_fn=loss_fn,
         step_callback=step_callback,
         mask_callback=mask_callback,
-        mask_every=shape_cfg.plot_mask_every,
     )
