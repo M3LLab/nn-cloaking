@@ -1,0 +1,106 @@
+# Open-geometry, best-cloak run: shape is a degree of freedom for cloaking,
+# not a fabrication target.  No manufacturability constraints — the mask is
+# allowed to be soft, speckled, or disconnected if that minimises L_cloak.
+#
+# L_cloak has coefficient 1; everything that would push the mask toward
+# {0,1} or smoothness is disabled.  Sibling of configs/open_geometry.yaml —
+# diff is in `shape_opt:` only.
+#
+# Usage:
+#   python run_optimize_open_geometry.py configs/open_geometry_best_cloak.yaml
+
+is_reference: false
+geometry_type: triangular
+
+material:
+  rho0: 1600.0
+  cs: 300.0
+
+domain:
+  f_star: 2.0
+  lambda_star: 1.0
+  H_factor: 4.305
+  W_factor: 12.5
+
+geometry:
+  a_factor: 0.0774
+  b_factor: 3.0
+  c_factor: 0.1545
+
+absorbing:
+  L_pml_factor: 1.0
+  xi_max: 4.0
+  pml_pow: 2
+
+mesh:
+  # Matches output/multifreq_small/config.yaml so the warm-started
+  # cell params see the same FEM problem they were trained against.
+  n_pml_x: 32
+  n_pml_y: 32
+  nx_phys: 80
+  ny_phys: 50
+  refinement_factor: 3
+  ele_type: TRI3
+
+source:
+  x_src_factor: 0.05
+  sigma_factor: 0.01
+  F0: 1.0
+
+solver:
+  ksp_type: preonly
+  pc_type: lu
+
+cells:
+  enabled: true
+  n_x: 50
+  n_y: 50
+  n_C_params: 2          # must match the warm-start .npz (cell_C_flat shape (2500, 2))
+  symmetrize_init: true
+
+loss:
+  type: top_surface
+  # Multi-freq band matches output/multifreq_small/config.yaml so the
+  # warm-started cloak is trained against the same objective it was built
+  # for — single-freq would improve f*=2.0 but regress at the band edges.
+  multi_freq:
+    f_stars: [1.5, 1.75, 2.0, 2.25, 2.5]
+    weights: [1.0, 1.0, 1.0, 1.0, 1.0]
+    max_workers: 5
+
+optimization:
+  method: raw
+  n_iters: 2000
+  lr: 0.5
+  lambda_l2: 0.0          # no anchor to analytical-cloak init
+  lambda_neighbor: 0.001  # tiny material TV (keeps materials physical, not shape)
+  plot_every: 100
+  # Warm-start from the trained triangular cloak.  The .npz holds only
+  # cell_C_flat + cell_rho (no shape_logits), so logits still init from the
+  # triangular cloak_mask — consistent with the materials, which live inside
+  # the triangle.
+  init_params: "output/multifreq_small/optimized_params.npz"
+
+# Shape is free.  Every knob below that biases the mask toward a
+# manufacturable shape is off; the optimiser only sees L_cloak (+ small
+# material TV).
+shape_opt:
+  beta: 1.0
+  beta_end: null         # no β ramp — sharpening is itself a constraint
+  init_magnitude: 3.0    # sigmoid(3) ≈ 0.95 at init; mask is free to move
+  logits_lr_mult: 1.0    # full LR on logits; drop to 0.1 if you see mask thrash
+  lambda_mask_smooth: 0.0  # off — speckled is fine if it cloaks
+  lambda_bin: 0.0          # off — grey is fine if it cloaks
+  simp_p: 1.0              # plain convex blend; no grey penalty
+  smooth_sigma: 0.0        # no spatial filter on logits
+  plot_mask_every: 25
+  project_final: true      # diagnostic only — soft mask won't survive cleanly
+  project_connectivity: 1
+  # Early stop: run *at least* `optimization.n_iters` (= 2000) steps; after
+  # that, keep going until the total loss has not improved in `patience`
+  # consecutive steps (or `max_iters` is hit).  patience: 0 disables.
+  patience: 10
+  max_iters: 5000          # null = uncapped
+  improvement_tol: 0.0     # any strict decrease counts as improvement
+
+output_dir: output/open_geometry_best_cloak
