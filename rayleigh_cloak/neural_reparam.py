@@ -195,7 +195,7 @@ class NeuralReparam:
         rel_rho = raw[:, n_C] * self.output_scale
 
         cell_C = self.C_flat_init * (1.0 + rel_C * self.cloak_mask[:, None])
-        cell_rho = self.rho_init * (1.0 + rel_rho * self.cloak_mask)
+        cell_rho = self.rho_init * jnp.maximum(1.0 + rel_rho * self.cloak_mask, 1e-6)
 
         return (cell_C, cell_rho)
 
