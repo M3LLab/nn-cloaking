@@ -146,7 +146,7 @@ def main(config_path: str = "configs/cell_based.yaml") -> None:
     n_y = config.cells.n_y
     n_C_params = config.cells.n_C_params
 
-    def _log_step(step, total, cloak, l2, neighbor, params, mat_metrics=None):
+    def _log_step(step, total, cloak, l2, neighbor, params, mat_metrics=None, theta=None, opt_state=None):
         nonlocal best_loss
         if mat_metrics is not None:
             csv_file.write(
@@ -165,6 +165,8 @@ def main(config_path: str = "configs/cell_based.yaml") -> None:
             np.savez(out / "optimized_params.npz",
                      cell_C_flat=np.asarray(cell_C_flat),
                      cell_rho=np.asarray(cell_rho))
+            if theta is not None:
+                save_theta(theta, str(out / "best_weights.npz"), opt_state=opt_state)
             print(f"    ✓ New best loss {total:.4e} at step {step}, saved params")
 
         if plot_every > 0 and step % plot_every == 0:
@@ -191,13 +193,8 @@ def main(config_path: str = "configs/cell_based.yaml") -> None:
 
     print(f"\nOptimisation done. {len(result.loss_history)} iterations.")
     print(f"  Loss: {result.loss_history[0]:.4e} → {result.loss_history[-1]:.4e}")
-    print(f"  Best loss: {best_loss:.4e} (saved to {out / 'optimized_params.npz'})")
+    print(f"  Best loss: {best_loss:.4e}")
     print(f"  Loss log: {loss_csv}")
-
-    if method == "neural" and hasattr(result, "best_theta"):
-        weights_path = str(out / "best_weights.npz")
-        save_theta(result.best_theta, weights_path, opt_state=result.opt_state)
-        print(f"  Best MLP weights + Adam state: {weights_path}")
 
     # Plot loss curves
     plot_loss(result, save_path=str(out / "loss_curves.pdf"))

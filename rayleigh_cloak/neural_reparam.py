@@ -369,7 +369,7 @@ def run_optimization_neural(
 
         if step_callback is not None:
             params = reparam.decode(theta)
-            step_callback(step, loss_val_float, L_cloak, L_l2, 0.0, params)
+            step_callback(step, loss_val_float, L_cloak, L_l2, 0.0, params, theta=theta, opt_state=opt_state)
 
         if plot_callback is not None and step % plot_every == 0:
             params = reparam.decode(theta)
@@ -551,7 +551,7 @@ def run_optimization_neural_multifreq(
                 best_theta = jax.tree.map(jnp.copy, theta)
 
             if step_callback is not None:
-                step_callback(step, loss_val_float, total_cloak_loss, L_l2, 0.0, params)
+                step_callback(step, loss_val_float, total_cloak_loss, L_l2, 0.0, params, theta=theta, opt_state=opt_state)
 
             if plot_callback is not None and step % plot_every == 0:
                 sol_list = primary_fwd_pred(params)
@@ -712,7 +712,7 @@ def run_optimization_neural_multifreq_minimax(
                 best_theta = jax.tree.map(jnp.copy, theta)
 
             if step_callback is not None:
-                step_callback(step, loss_val_float, worst_loss, L_l2, 0.0, params)
+                step_callback(step, loss_val_float, worst_loss, L_l2, 0.0, params, theta=theta, opt_state=opt_state)
 
             if plot_callback is not None and step % plot_every == 0:
                 sol_list = primary_fwd_pred(params)
