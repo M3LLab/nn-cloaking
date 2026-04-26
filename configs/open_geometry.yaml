@@ -54,15 +54,17 @@ cells:
   n_C_params: 6
 
 loss:
-  type: right_boundary
+  type: top_surface          # was right_boundary — must match the eval surface
+                             # used by scripts/frequency_sweep.py
 
 optimization:
   method: raw          # unused here; open-geometry has its own loop
-  n_iters: 500
+  n_iters: 2000        # was 500 — loss curve was still falling at step 500
   lr: 0.5
-  lambda_l2: 0.001
+  lambda_l2: 0.0       # was 0.001 — anchored to analytical-cloak material;
+                       # actively un-cloaks cells the mask evicts
   lambda_neighbor: 0.001
-  plot_every: 50
+  plot_every: 100
   init_params: ""      # warm-start .npz; may include shape_logits
 
 # Open-geometry extras.  Read directly by rayleigh_cloak/open_geometry.py —
@@ -72,14 +74,16 @@ shape_opt:
   # `beta_end` across n_iters — β-continuation is the standard way to get
   # crisp masks without killing gradients early.
   beta: 1.0
-  beta_end: null         # e.g. 8.0 to anneal toward binary
+  beta_end: 8.0          # was null — anneal toward binary; binarisation/mask-TV
+                         # were flat in the previous run
   init_magnitude: 3.0    # |logit| at init (sigmoid(3) ≈ 0.95)
-  logits_lr_mult: 1.0    # logits LR = optimization.lr * this
+  logits_lr_mult: 0.1    # was 1.0 — Adam(lr=0.5) on logits caused mask thrash
+                         # (solid_frac swung 0.33→0.86 in the previous run)
   # Regularisers / penalties
-  lambda_mask_smooth: 1.0e-2   # TV on logits (perimeter-like)
-  lambda_bin: 0.0              # mean(m·(1-m)) — pulls m toward {0, 1}
+  lambda_mask_smooth: 1.0e-3   # was 1.0e-2 — TV was flat-large, locking topology
+  lambda_bin: 1.0e-3           # was 0.0 — works with simp_p>1 to drive m to {0,1}
   # Shape-side tricks (topology-opt classics)
-  simp_p: 1.0                  # exponent on m in the material blend; 3 for SIMP-style
+  simp_p: 3.0                  # was 1.0 — SIMP penalises grey
   smooth_sigma: 0.0            # Gaussian filter σ (cells) on logits; 1-2 suppresses islands
   # Output
   plot_mask_every: 25          # 0 = disabled
