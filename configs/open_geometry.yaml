@@ -89,5 +89,11 @@ shape_opt:
   plot_mask_every: 25          # 0 = disabled
   project_final: true          # save largest-CC "manufacturable" mask at the end
   project_connectivity: 1      # 1 = 4-connected, 2 = 8-connected
+  # Early stop: run *at least* `optimization.n_iters` (= 2000) steps; after
+  # that, keep going until the total loss has not improved in `patience`
+  # consecutive steps (or `max_iters` is hit).  patience: 0 disables.
+  patience: 10
+  max_iters: 5000              # null = uncapped
+  improvement_tol: 0.0         # any strict decrease counts as improvement
 
 output_dir: output/open_geometry
