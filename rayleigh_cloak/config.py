@@ -151,6 +151,7 @@ class MaterialCementGMMConfig(BaseModel):
     enabled: bool = False
     path: str = "output/ca_bulk_squared/gmm_lambda_mu_rho.npz"
     weight: float = 1.0
+    threshold: float | None = None  # override the τ stored in the .npz; None → use file value
 
 
 class RegularizationsConfig(BaseModel):

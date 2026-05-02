@@ -46,8 +46,17 @@ class GMMPrior:
     threshold: jnp.ndarray
 
 
-def load_gmm_prior(path: str | Path, dtype=jnp.float32) -> GMMPrior:
-    """Load a .npz produced by ``fit_gmm.py`` into a :class:`GMMPrior`."""
+def load_gmm_prior(
+    path: str | Path,
+    dtype=jnp.float32,
+    threshold: float | None = None,
+) -> GMMPrior:
+    """Load a .npz produced by ``fit_gmm.py`` into a :class:`GMMPrior`.
+
+    Pass ``threshold`` to override the τ stored in the file; ``None`` keeps
+    the value baked in at fit time. The GMM density itself is unchanged, so
+    no refit is needed to try a different flat-top cutoff.
+    """
     data = np.load(str(path), allow_pickle=True)
     cov_type = str(data["covariance_type"])
     if cov_type != "full":
@@ -55,13 +64,14 @@ def load_gmm_prior(path: str | Path, dtype=jnp.float32) -> GMMPrior:
             f"GMMPrior currently supports covariance_type='full' only; "
             f"got {cov_type!r}. Refit with `--covariance-type=full`."
         )
+    tau = float(data["threshold"]) if threshold is None else float(threshold)
     return GMMPrior(
         weights=jnp.asarray(data["weights"], dtype=dtype),
         means=jnp.asarray(data["means"], dtype=dtype),
         precisions_cholesky=jnp.asarray(data["precisions_cholesky"], dtype=dtype),
         feature_mean=jnp.asarray(data["feature_mean"], dtype=dtype),
         feature_std=jnp.asarray(data["feature_std"], dtype=dtype),
-        threshold=jnp.asarray(float(data["threshold"]), dtype=dtype),
+        threshold=jnp.asarray(tau, dtype=dtype),
     )
 
 

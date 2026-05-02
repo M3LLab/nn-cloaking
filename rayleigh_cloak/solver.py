@@ -359,7 +359,7 @@ def solve_optimization_neural(
     gmm_prior: GMMPrior | None = None
     if gmm_cfg.enabled:
         print(f"=== Loading material-cement GMM prior from {gmm_cfg.path} ===")
-        gmm_prior = load_gmm_prior(gmm_cfg.path)
+        gmm_prior = load_gmm_prior(gmm_cfg.path, threshold=gmm_cfg.threshold)
         print(
             f"  K={int(gmm_prior.weights.shape[0])} components, "
             f"weight={gmm_cfg.weight}, threshold={float(gmm_prior.threshold):.4f}"

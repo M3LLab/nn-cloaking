@@ -32,15 +32,16 @@ import yaml
 os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")
 
 
-def _build_cloak_mask(config_path: Path, n_x: int, n_y: int) -> tuple[np.ndarray, np.ndarray, dict]:
+def _build_cloak_mask(config_path: Path, n_x: int, n_y: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
     """Reproduce CellDecomposition.cloak_mask + cell_centers from the run's config.
 
     We import the project's ``DerivedParams`` (lightweight — no gmsh/jax) and
-    inline the geometry's ``in_cloak`` formula so this script doesn't pull in
-    the gmsh-loaded geometry module.
+    inline the geometry's ``in_cloak`` / ``in_defect`` formulas so this script
+    doesn't pull in the gmsh-loaded geometry module.
 
-    Returns ``(cloak_mask (n_cells,), cell_centers (n_cells, 2), info)`` where
-    info carries the cloak bbox for optional rendering.
+    Returns ``(cloak_mask (n_cells,), defect_mask (n_cells,), cell_centers
+    (n_cells, 2), info)`` where info carries the cloak bbox for optional
+    rendering.
     """
     # Project's pydantic config + DerivedParams.
     from rayleigh_cloak.config import load_config, DerivedParams
@@ -74,15 +75,17 @@ def _build_cloak_mask(config_path: Path, n_x: int, n_y: int) -> tuple[np.ndarray
         d1 = a * (1.0 - r)
         d2 = b * (1.0 - r)
         cloak_mask = (r <= 1.0) & (depth >= d1) & (depth <= d2)
+        defect_mask = (r <= 1.0) & (depth >= 0.0) & (depth <= d1)
     else:  # circular
         rad = np.sqrt((cell_centers[:, 0] - x_c) ** 2 + (cell_centers[:, 1] - y_c) ** 2)
         cloak_mask = (rad >= ri) & (rad <= rc)
+        defect_mask = rad < ri
 
     info = {
         "geometry_type": cfg.geometry_type,
         "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max,
     }
-    return cloak_mask, cell_centers, info
+    return cloak_mask, defect_mask, cell_centers, info
 
 
 def _flat2_to_lame(cell_C_flat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -117,26 +120,43 @@ def _resolve_grid(config_path: Path | None, n_cells: int) -> tuple[int, int]:
     raise ValueError(f"can't factor n_cells={n_cells} and no config given")
 
 
-def _tile_image(
-    geoms: np.ndarray,           # (n_cells, H, W) uint8
+def _tile_rgb(
+    geoms: np.ndarray,           # (n_cells, H, W) uint8 — only meaningful where cloak_mask=True
+    cloak_mask: np.ndarray,      # (n_cells,) bool
+    defect_mask: np.ndarray,     # (n_cells,) bool
     n_x: int,
     n_y: int,
+    bg_rgb: np.ndarray,          # (3,) uint8 — outside-cloak/defect color
+    fg_rgb: np.ndarray,          # (3,) uint8 — solid material color
+    void_rgb: np.ndarray,        # (3,) uint8 — void color *inside* cloak microstructures
+    defect_rgb: np.ndarray,      # (3,) uint8 — solid color for the defect region
 ) -> np.ndarray:
-    """Tile (n_cells, H, W) cells into a single image of shape (n_y*H, n_x*W).
+    """Tile per-cell content into an RGB image of shape (n_y*H, n_x*W, 3).
 
     Cell index convention is ``cell_idx = ix * n_y + iy`` (the codebase's
-    CellDecomposition convention). We place cell (ix, iy) at row (n_y-1-iy)
-    so that y-up is up in the saved image.
+    CellDecomposition convention). Cell (ix, iy) is placed at row (n_y-1-iy)
+    so that y-up is up in the saved image. Three categories per cell:
+      * cloak  → render the matched microstructure (fg_rgb / void_rgb)
+      * defect → solid defect_rgb
+      * outside → solid bg_rgb
     """
     n_cells, H, W = geoms.shape
     assert n_cells == n_x * n_y, f"{n_cells} != {n_x}*{n_y}"
-    canvas = np.zeros((n_y * H, n_x * W), dtype=geoms.dtype)
+    canvas = np.empty((n_y * H, n_x * W, 3), dtype=np.uint8)
+    canvas[..., :] = bg_rgb                                    # default = outside
     for ix in range(n_x):
         for iy in range(n_y):
             idx = ix * n_y + iy
             row = n_y - 1 - iy        # y-up
             col = ix
-            canvas[row * H:(row + 1) * H, col * W:(col + 1) * W] = geoms[idx]
+            sl = (slice(row * H, (row + 1) * H), slice(col * W, (col + 1) * W))
+            if cloak_mask[idx]:
+                tile = geoms[idx]                              # (H, W) binary
+                rgb = np.where(tile[..., None].astype(bool), fg_rgb, void_rgb)
+                canvas[sl[0], sl[1], :] = rgb
+            elif defect_mask[idx]:
+                canvas[sl[0], sl[1], :] = defect_rgb
+            # else: leave as bg_rgb
     return canvas
 
 
@@ -192,9 +212,11 @@ def main() -> None:
             f"--config {config_path} not found; needed to compute cloak_mask. "
             "Pass --config explicitly."
         )
-    cloak_mask, _cell_centers, _geo_info = _build_cloak_mask(config_path, n_x, n_y)
+    cloak_mask, defect_mask, _cell_centers, _geo_info = _build_cloak_mask(config_path, n_x, n_y)
     n_cloak = int(cloak_mask.sum())
+    n_defect = int(defect_mask.sum())
     print(f"cloak cells: {n_cloak}/{n_cells}  ({n_cloak/n_cells:.1%})")
+    print(f"defect cells: {n_defect}/{n_cells}  ({n_defect/n_cells:.1%})")
 
     # ── load dataset (λ, μ, ρ) and standardise ──────────────────────
     print(f"loading dataset {args.dataset} ...")
@@ -262,15 +284,40 @@ def main() -> None:
     match_d[cloak_indices] = cloak_match_d
 
     # ── tile + plot ────────────────────────────────────────────────
-    canvas = _tile_image(geoms, n_x, n_y)                         # (n_y*H, n_x*W)
+    # Region colors:
+    #   outside (neither cloak nor defect) → warm tan / brown-yellow
+    #   defect (obstacle being cloaked)    → white (uncolored)
+    #   cloak material (microstructure 1)  → dark gray
+    #   cloak void (microstructure 0)      → off-white (so brown stays unique
+    #                                         to truly-outside cells)
+    bg_rgb = np.array([200, 160,  99], dtype=np.uint8)   # #c8a063
+    fg_rgb = np.array([ 70,  70,  70], dtype=np.uint8)   # #2e2e2e
+    void_rgb = np.array([245, 245, 240], dtype=np.uint8) # #f5f5f0
+    defect_rgb = np.array([255, 255, 255], dtype=np.uint8)
+
+    canvas = _tile_rgb(geoms, cloak_mask, defect_mask, n_x, n_y,
+                       bg_rgb, fg_rgb, void_rgb, defect_rgb)
+
+    # Per-cell match-quality grid, laid out the same way _tile_rgb lays cells:
+    # (n_y, n_x) with row 0 at the top (y-up).
+    quality_grid = np.full((n_y, n_x), np.nan)
+    for ix in range(n_x):
+        for iy in range(n_y):
+            idx = ix * n_y + iy
+            row = n_y - 1 - iy
+            quality_grid[row, ix] = match_d[idx]
 
     out_path = args.output if args.output else args.params.parent / "tiled_microstructure.png"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    fig_w = max(8.0, 0.5 * n_x)
+    fig_w = max(8.0, 0.5 * n_x) + max(4.0, 0.25 * n_x)
     fig_h = max(6.0, 0.5 * n_y)
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
-    ax.imshow(canvas, cmap="gray_r", interpolation="nearest", aspect="equal")
+    fig, (ax, ax_q) = plt.subplots(
+        1, 2,
+        figsize=(fig_w, fig_h),
+        gridspec_kw={"width_ratios": [2.0, 1.0]},
+    )
+    ax.imshow(canvas, interpolation="nearest", aspect="equal")
     # Cell-boundary grid lines
     for ix in range(1, n_x):
         ax.axvline(ix * W - 0.5, color="C3", linewidth=0.4, alpha=0.6)
@@ -280,12 +327,31 @@ def main() -> None:
     ax.set_yticks([])
     ax.set_title(
         f"{args.params.parent.name} — {n_x}×{n_y} macro cells, "
-        f"cloak cells replaced by nearest dataset microstructure ({H}×{W})\n"
-        f"cloak={cloak_indices.size}/{n_cells}   "
-        f"match distance (std-L2): mean={cloak_match_d.mean():.2f}, "
-        f"median={np.median(cloak_match_d):.2f}",
+        f"cloak cells replaced by nearest dataset microstructure ({H}×{W})\n",
+        # f"cloak={cloak_indices.size}/{n_cells}   "
+        # f"match distance (std-L2): mean={cloak_match_d.mean():.2f}, "
+        # f"median={np.median(cloak_match_d):.2f}"
         fontsize=11,
     )
+
+    # Match-quality heatmap: green = small distance (good match), red = large
+    # (bad match), yellow in between. Non-cloak cells are NaN and rendered with
+    # the colormap's "bad" color (light gray) so they read as "not applicable".
+    qcmap = plt.get_cmap("RdYlGn_r").copy()
+    qcmap.set_bad(color="#dddddd")
+    vmax = float(np.nanpercentile(cloak_match_d, 95)) if cloak_match_d.size else 1.0
+    vmax = max(vmax, float(cloak_match_d.min()) + 1e-6) if cloak_match_d.size else 1.0
+    im_q = ax_q.imshow(quality_grid, cmap=qcmap, interpolation="nearest",
+                       aspect="equal", vmin=0.0, vmax=vmax)
+    ax_q.set_xticks([])
+    ax_q.set_yticks([])
+    ax_q.set_title(
+        "match quality (std-L2 distance in λ, μ, ρ)",
+        fontsize=11,
+    )
+    cbar = fig.colorbar(im_q, ax=ax_q, fraction=0.046, pad=0.04)
+    cbar.set_label("standardised L2 distance")
+
     fig.tight_layout()
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
