@@ -46,7 +46,11 @@ from jax_fem.solver import solver as jax_fem_solver
 from rayleigh_cloak import load_config
 from rayleigh_cloak.cells import CellDecomposition
 from rayleigh_cloak.config import DerivedParams
-from rayleigh_cloak.loss import transmitted_displacement_ratio
+from rayleigh_cloak.loss import (
+    find_embedded_eval_node_indices,
+    make_fixed_surface_eval_points,
+    transmitted_displacement_ratio,
+)
 from rayleigh_cloak.materials import C_iso, CellMaterial
 from rayleigh_cloak.mesh import extract_submesh, generate_mesh_full
 from rayleigh_cloak.optimize import get_top_surface_beyond_cloak_indices
@@ -119,13 +123,29 @@ def plot_results(case_csvs: dict[str, Path], out_dir: Path) -> None:
 # ── sweep runners ─────────────────────────────────────────────────────
 
 
-def _surface_indices_at_f(cloak_mesh, geometry, dp, kept_nodes):
-    """Top-surface-beyond-cloak indices for the f-specific domain height.
+def _surface_indices_at_f(cloak_mesh, geometry, dp, kept_nodes, loss_cfg=None):
+    """Surface evaluation indices for the f-specific domain height.
 
     Domain height (and thus ``y_top``) depends on ``f_star`` via wavelength,
     so the evaluation surface must be rebuilt per frequency — matching what
     ``resolve_loss_target`` does during training.
+
+    When ``loss_cfg`` is supplied with ``n_eval_points > 0`` the function
+    returns the indices of the *embedded* fixed-x evaluation nodes (mirroring
+    the optimizer's ``top_surface`` loss); otherwise it falls back to the
+    legacy node set returned by ``get_top_surface_beyond_cloak_indices``.
     """
+    if loss_cfg is not None and int(loss_cfg.n_eval_points) > 0:
+        eval_xs = make_fixed_surface_eval_points(
+            geometry, dp, int(loss_cfg.n_eval_points),
+            noise_sigma=float(loss_cfg.eval_noise_sigma),
+            seed=int(loss_cfg.eval_noise_seed),
+        )
+        cs_idx = find_embedded_eval_node_indices(
+            cloak_mesh.points, eval_xs, dp.y_top,
+        )
+        return cs_idx, kept_nodes[cs_idx]
+
     x_left = dp.x_off
     x_right = dp.x_off + dp.W
     cs_idx = get_top_surface_beyond_cloak_indices(
@@ -164,7 +184,9 @@ def run_obstacle_sweep(
         sol_list = jax_fem_solver(problem, solver_options=solver_opts)
         u_obs = np.asarray(sol_list[0])
 
-        cs_idx, rs_idx = _surface_indices_at_f(cloak_mesh, geometry, dp, kept_nodes)
+        cs_idx, rs_idx = _surface_indices_at_f(
+            cloak_mesh, geometry, dp, kept_nodes, loss_cfg=base_config.loss,
+        )
         ratio = transmitted_displacement_ratio(
             u_obs, ref_result.u, cs_idx, rs_idx,
         )
@@ -196,7 +218,9 @@ def run_ideal_sweep(
         sol_list = jax_fem_solver(problem, solver_options=solver_opts)
         u_ideal = np.asarray(sol_list[0])
 
-        cs_idx, rs_idx = _surface_indices_at_f(cloak_mesh, geometry, dp, kept_nodes)
+        cs_idx, rs_idx = _surface_indices_at_f(
+            cloak_mesh, geometry, dp, kept_nodes, loss_cfg=base_config.loss,
+        )
         ratio = transmitted_displacement_ratio(
             u_ideal, ref_result.u, cs_idx, rs_idx,
         )
@@ -240,7 +264,9 @@ def run_optimized_sweep(
         sol_list = jax_fem_solver(problem, solver_options=solver_opts)
         u_opt = np.asarray(sol_list[0])
 
-        cs_idx, rs_idx = _surface_indices_at_f(cloak_mesh, geometry, dp, kept_nodes)
+        cs_idx, rs_idx = _surface_indices_at_f(
+            cloak_mesh, geometry, dp, kept_nodes, loss_cfg=base_config.loss,
+        )
         ratio = transmitted_displacement_ratio(
             u_opt, ref_result.u, cs_idx, rs_idx,
         )
@@ -307,14 +333,16 @@ def main():
         full_mesh = generate_mesh_full(base_config, dp_base, geometry)
         cloak_mesh, kept_nodes = extract_submesh(full_mesh, geometry)
 
-        x_left_phys = dp_base.x_off
-        x_right_phys = dp_base.x_off + dp_base.W
-        cloak_surface_idx = get_top_surface_beyond_cloak_indices(
-            cloak_mesh.points, geometry,
-            dp_base.y_top, x_left_phys, x_right_phys,
+        cloak_surface_idx, ref_surface_idx = _surface_indices_at_f(
+            cloak_mesh, geometry, dp_base, kept_nodes,
+            loss_cfg=base_config.loss,
         )
-        ref_surface_idx = kept_nodes[cloak_surface_idx]
-        print(f"Surface evaluation nodes beyond cloak: {len(cloak_surface_idx)}")
+        if int(base_config.loss.n_eval_points) > 0:
+            print(f"Surface evaluation nodes (fixed eval points): "
+                  f"{len(cloak_surface_idx)}/{base_config.loss.n_eval_points}")
+        else:
+            print(f"Surface evaluation nodes beyond cloak: "
+                  f"{len(cloak_surface_idx)}")
 
         f_stars = np.arange(0.7, 3.35, 0.1)
 

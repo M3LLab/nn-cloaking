@@ -47,7 +47,11 @@ from jax_fem.solver import solver as jax_fem_solver
 from rayleigh_cloak import load_config
 from rayleigh_cloak.absorbing import make_xi_profile
 from rayleigh_cloak.config import DerivedParams
-from rayleigh_cloak.loss import transmitted_displacement_ratio
+from rayleigh_cloak.loss import (
+    find_embedded_eval_node_indices,
+    make_fixed_surface_eval_points,
+    transmitted_displacement_ratio,
+)
 from rayleigh_cloak.materials import C_iso
 from rayleigh_cloak.mesh import extract_submesh, generate_mesh_full
 from rayleigh_cloak.optimize import get_top_surface_beyond_cloak_indices
@@ -348,7 +352,20 @@ def _make_config_at_fstar(base_config, f_star: float, refinement_factor: int | N
     return base_config.model_copy(update=updates)
 
 
-def _surface_indices_at_f(cloak_mesh, geometry, dp, kept_nodes):
+def _surface_indices_at_f(cloak_mesh, geometry, dp, kept_nodes, loss_cfg=None):
+    """Same convention as scripts/frequency_sweep.py: prefer the embedded
+    fixed-x eval nodes when ``loss_cfg.n_eval_points > 0``."""
+    if loss_cfg is not None and int(loss_cfg.n_eval_points) > 0:
+        eval_xs = make_fixed_surface_eval_points(
+            geometry, dp, int(loss_cfg.n_eval_points),
+            noise_sigma=float(loss_cfg.eval_noise_sigma),
+            seed=int(loss_cfg.eval_noise_seed),
+        )
+        cs_idx = find_embedded_eval_node_indices(
+            cloak_mesh.points, eval_xs, dp.y_top,
+        )
+        return cs_idx, kept_nodes[cs_idx]
+
     x_left = dp.x_off
     x_right = dp.x_off + dp.W
     cs_idx = get_top_surface_beyond_cloak_indices(
@@ -391,7 +408,9 @@ def run_validated_sweep(
         sol_list = jax_fem_solver(problem, solver_options=solver_opts)
         u_val = np.asarray(sol_list[0])
 
-        cs_idx, rs_idx = _surface_indices_at_f(cloak_mesh, geometry, dp, kept_nodes)
+        cs_idx, rs_idx = _surface_indices_at_f(
+            cloak_mesh, geometry, dp, kept_nodes, loss_cfg=base_config.loss,
+        )
         ratio = transmitted_displacement_ratio(u_val, ref_result.u, cs_idx, rs_idx)
         print(f"ratio={ratio:.4f}  ({time.time()-t0:.1f}s)")
         ratios.append(ratio)

@@ -215,6 +215,44 @@ def transmission_loss(
 # ── Loss resolution from config ────────────────────────────────────
 
 
+def find_embedded_eval_node_indices(
+    mesh_points: np.ndarray,
+    eval_xs: np.ndarray,
+    y_top: float,
+    tol: float = 1e-7,
+) -> np.ndarray:
+    """Map fixed-eval x-positions to mesh-node indices.
+
+    Assumes the mesh was built with these positions embedded as forced 1-D
+    nodes on the top edge (see ``mesh._embed_top_surface_eval_points``).
+    Each ``(eval_x, y_top)`` should match exactly one node within ``tol``.
+    Raises if any eval x has no matching node — that means the embedding
+    silently dropped a point and the metric would be silently misaligned.
+    """
+    pts = np.asarray(mesh_points)
+    on_top = np.where(np.abs(pts[:, 1] - y_top) < tol)[0]
+    if len(on_top) == 0:
+        raise RuntimeError(
+            f"No mesh nodes on y == y_top={y_top!r}; cannot resolve fixed "
+            f"top-surface eval points."
+        )
+    top_xs = pts[on_top, 0]
+    out = np.empty(len(eval_xs), dtype=np.int64)
+    for i, x in enumerate(eval_xs):
+        d = np.abs(top_xs - x)
+        j = int(np.argmin(d))
+        if d[j] > tol:
+            raise RuntimeError(
+                f"Fixed eval x={x!r} has no matching mesh node within tol="
+                f"{tol!r} (closest is {top_xs[j]!r}, dist={d[j]!r}). The "
+                f"mesh was likely generated without embedding the eval "
+                f"points — check that loss.n_eval_points was set at "
+                f"mesh-build time."
+            )
+        out[i] = on_top[j]
+    return out
+
+
 def resolve_loss_target(
     loss_type: str,
     mesh_points: np.ndarray,
@@ -222,8 +260,19 @@ def resolve_loss_target(
     params,
     kept_nodes: np.ndarray,
     u_ref: np.ndarray,
+    loss_cfg=None,
 ):
     """Resolve a loss type string to node indices, reference data, and loss fn.
+
+    Parameters
+    ----------
+    loss_cfg : LossConfig, optional
+        When provided and ``loss_type == "top_surface"``, ``loss_cfg.
+        n_eval_points > 0`` switches the loss to use the *fixed-position*
+        eval nodes embedded in the mesh by ``mesh._embed_top_surface_eval_
+        points``. The legacy ``get_top_surface_beyond_cloak_indices`` path
+        (all downstream surface nodes) is used when ``loss_cfg`` is None or
+        ``n_eval_points == 0``.
 
     Returns
     -------
@@ -244,10 +293,21 @@ def resolve_loss_target(
         indices = get_right_boundary_indices(pts, x_right)
         loss_fn = cloaking_loss
     elif loss_type == "top_surface":
-        indices = get_top_surface_beyond_cloak_indices(
-            pts, geometry, params.y_top,
-            params.x_off, params.x_off + params.W,
-        )
+        n_eval = int(loss_cfg.n_eval_points) if loss_cfg is not None else 0
+        if n_eval > 0:
+            eval_xs = make_fixed_surface_eval_points(
+                geometry, params, n_eval,
+                noise_sigma=float(loss_cfg.eval_noise_sigma),
+                seed=int(loss_cfg.eval_noise_seed),
+            )
+            indices = find_embedded_eval_node_indices(
+                pts, eval_xs, params.y_top,
+            )
+        else:
+            indices = get_top_surface_beyond_cloak_indices(
+                pts, geometry, params.y_top,
+                params.x_off, params.x_off + params.W,
+            )
         loss_fn = transmission_loss
     elif loss_type == "outside_cloak":
         indices = get_outside_cloak_indices(

@@ -66,6 +66,7 @@ def _create_geometry(cfg: SimulationConfig, params: DerivedParams):
         return CircularCloakGeometry(
             ri=params.ri, rc=params.rc,
             x_c=params.x_c, y_c=params.y_c,
+            y_top=params.y_top,
         )
     raise ValueError(f"Unknown geometry_type: {cfg.geometry_type!r}")
 
@@ -218,7 +219,7 @@ def solve_optimization(config: SimulationConfig, step_callback=None) -> Optimiza
     # Loss target nodes from config
     boundary_indices, u_ref_boundary, loss_fn = resolve_loss_target(
         config.loss.type, np.asarray(cloak_mesh.points), geometry, params,
-        kept_nodes, ref_result.u,
+        kept_nodes, ref_result.u, loss_cfg=config.loss,
     )
     print(f"  {len(boundary_indices)} loss nodes ({config.loss.type})")
 
@@ -408,7 +409,7 @@ def solve_optimization_neural(
             # Loss target at this frequency
             indices_f, u_ref_f, loss_fn_f = resolve_loss_target(
                 config.loss.type, np.asarray(cloak_mesh.points), geometry,
-                dp_f, kept_nodes, ref_f.u,
+                dp_f, kept_nodes, ref_f.u, loss_cfg=config.loss,
             )
             print(f" {len(indices_f)} loss nodes, weight={weight:.2f}")
 
@@ -474,7 +475,7 @@ def solve_optimization_neural(
     # Loss target nodes from config
     boundary_indices, u_ref_boundary, loss_fn = resolve_loss_target(
         config.loss.type, np.asarray(cloak_mesh.points), geometry, params,
-        kept_nodes, ref_result.u,
+        kept_nodes, ref_result.u, loss_cfg=config.loss,
     )
     print(f"  {len(boundary_indices)} loss nodes ({config.loss.type})")
 
@@ -639,7 +640,7 @@ def solve_optimization_neural_topo(
     # Loss target nodes from config
     boundary_indices, u_ref_boundary, loss_fn = resolve_loss_target(
         config.loss.type, np.asarray(cloak_mesh.points), geometry, params,
-        kept_nodes, ref_result.u,
+        kept_nodes, ref_result.u, loss_cfg=config.loss,
     )
     print(f"  {len(boundary_indices)} loss nodes ({config.loss.type})")
 

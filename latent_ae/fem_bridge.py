@@ -107,7 +107,7 @@ def build_freq_targets(
 
         indices_f, u_ref_f, loss_fn_f = resolve_loss_target(
             base_config.loss.type, np.asarray(cloak_mesh.points), geometry,
-            dp_f, kept_nodes, ref_f.u,
+            dp_f, kept_nodes, ref_f.u, loss_cfg=base_config.loss,
         )
 
         freq_targets.append(FreqTarget(

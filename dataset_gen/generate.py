@@ -163,6 +163,7 @@ def build_freq_context(
         ctx.base_config.loss.type,
         np.asarray(ctx.cloak_mesh.points),
         ctx.geometry, dp_f, ctx.kept_nodes, ref_result.u,
+        loss_cfg=ctx.base_config.loss,
     )
 
     return FreqContext(

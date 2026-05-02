@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 import gmsh
 import jax.numpy as jnp
+import numpy as np
 
 from rayleigh_cloak.config import DerivedParams
 
@@ -73,6 +74,8 @@ class TriangularCloakGeometry:
         h_fine: float,
         h_elem: float,
         h_outside: float | None = None,
+        top_eval_xs=None,
+        h_surf: float | None = None,
     ) -> list[int]:
         """Cut out the triangular defect and add cloak refinement fields.
 
@@ -84,10 +87,21 @@ class TriangularCloakGeometry:
         h_elem : characteristic length for corner points (legacy "background")
         h_outside : target mesh size *outside* the cloak. ``None`` → h_elem
                     (back-compat).
+        top_eval_xs : optional ndarray of forced top-edge x-positions. When
+                    provided, the two top sub-edges (left and right of the
+                    cloak) are constructed as chains of lines through these
+                    positions, guaranteeing that each x is a real triangle
+                    vertex on the free surface.
+        h_surf : characteristic length for the chained top-edge vertices.
+                 Falls back to ``h_fine`` when ``None``.
         """
         if h_outside is None:
             h_outside = h_elem
+        if h_surf is None:
+            h_surf = h_fine
         p1, p2, p3, p4 = rect_points
+
+        from rayleigh_cloak.mesh import _chain_top_edge
 
         # Triangle vertices on the free surface and apex
         pt_left = geo.addPoint(self.x_c - self.c, self.y_top, 0.0, h_fine)
@@ -97,20 +111,34 @@ class TriangularCloakGeometry:
         # Outer cloak apex (for refinement)
         oc_apex = geo.addPoint(self.x_c, self.y_top - self.b, 0.0, h_fine)
 
-        # Rectangle edges (top edge split around the triangle opening)
+        # Rectangle edges (top edge split around the triangle opening; each
+        # half optionally chained through forced eval x-positions).
         l_bot = geo.addLine(p1, p2)
         l_right = geo.addLine(p2, p3)
-        l_top1 = geo.addLine(p3, pt_right)
-        l_top2 = geo.addLine(pt_left, p4)
+        if top_eval_xs is not None:
+            xs = np.asarray(top_eval_xs)
+            l_top1_lines = _chain_top_edge(
+                geo, p3, pt_right, xs, self.y_top, h_surf,
+                descending=True, x_lo=self.x_c + self.c, x_hi=None,
+            )
+            l_top2_lines = _chain_top_edge(
+                geo, pt_left, p4, xs, self.y_top, h_surf,
+                descending=True, x_lo=None, x_hi=self.x_c - self.c,
+            )
+        else:
+            l_top1_lines = [geo.addLine(p3, pt_right)]
+            l_top2_lines = [geo.addLine(pt_left, p4)]
         l_left = geo.addLine(p4, p1)
 
         # Triangle slopes
         tl_right = geo.addLine(pt_right, pt_apex)
         tl_left = geo.addLine(pt_apex, pt_left)
 
-        outer_loop = geo.addCurveLoop([
-            l_bot, l_right, l_top1, tl_right, tl_left, l_top2, l_left
-        ])
+        outer_loop = geo.addCurveLoop(
+            [l_bot, l_right] + l_top1_lines
+            + [tl_right, tl_left]
+            + l_top2_lines + [l_left]
+        )
         surf = geo.addPlaneSurface([outer_loop])
 
         gmsh.model.geo.synchronize()
@@ -140,7 +168,7 @@ class TriangularCloakGeometry:
         # Store the cloak threshold field tag so mesh.py can compose it
         self._cloak_field_tag = f_thresh_cloak
 
-        return [l_top1, l_top2]
+        return l_top1_lines + l_top2_lines
 
     def build_gmsh_geometry_full(
         self,
@@ -149,16 +177,24 @@ class TriangularCloakGeometry:
         h_fine: float,
         h_elem: float,
         h_outside: float | None = None,
+        top_eval_xs=None,
+        h_surf: float | None = None,
     ) -> list[int]:
         """Build full domain mesh (no defect cutout) with cloak vertices embedded.
 
         The inner triangle vertices are embedded as mesh points so that the
         mesh refines around the cloak region, but no hole is cut.  This lets
         both reference and cloak solves share identical node positions.
+
+        See ``build_gmsh_geometry`` for ``top_eval_xs`` / ``h_surf`` semantics.
         """
         if h_outside is None:
             h_outside = h_elem
+        if h_surf is None:
+            h_surf = h_fine
         p1, p2, p3, p4 = rect_points
+
+        from rayleigh_cloak.mesh import _chain_top_edge
 
         # Triangle vertices on the free surface and apices
         pt_left = geo.addPoint(self.x_c - self.c, self.y_top, 0.0, h_fine)
@@ -167,17 +203,30 @@ class TriangularCloakGeometry:
         oc_apex = geo.addPoint(self.x_c, self.y_top - self.b, 0.0, h_fine)
 
         # Full rectangle — top edge split at cloak opening points for
-        # consistent node placement with the cutout mesh
+        # consistent node placement with the cutout mesh; left/right halves
+        # optionally chained through the forced eval x-positions.
         l_bot = geo.addLine(p1, p2)
         l_right = geo.addLine(p2, p3)
-        l_top1 = geo.addLine(p3, pt_right)
+        if top_eval_xs is not None:
+            xs = np.asarray(top_eval_xs)
+            l_top1_lines = _chain_top_edge(
+                geo, p3, pt_right, xs, self.y_top, h_surf,
+                descending=True, x_lo=self.x_c + self.c, x_hi=None,
+            )
+            l_top2_lines = _chain_top_edge(
+                geo, pt_left, p4, xs, self.y_top, h_surf,
+                descending=True, x_lo=None, x_hi=self.x_c - self.c,
+            )
+        else:
+            l_top1_lines = [geo.addLine(p3, pt_right)]
+            l_top2_lines = [geo.addLine(pt_left, p4)]
         l_top_mid = geo.addLine(pt_right, pt_left)
-        l_top2 = geo.addLine(pt_left, p4)
         l_left = geo.addLine(p4, p1)
 
-        outer_loop = geo.addCurveLoop([
-            l_bot, l_right, l_top1, l_top_mid, l_top2, l_left
-        ])
+        outer_loop = geo.addCurveLoop(
+            [l_bot, l_right] + l_top1_lines
+            + [l_top_mid] + l_top2_lines + [l_left]
+        )
         surf = geo.addPlaneSurface([outer_loop])
 
         gmsh.model.geo.synchronize()
@@ -215,4 +264,4 @@ class TriangularCloakGeometry:
 
         self._cloak_field_tag = f_thresh_cloak
 
-        return [l_top1, l_top_mid, l_top2]
+        return l_top1_lines + [l_top_mid] + l_top2_lines

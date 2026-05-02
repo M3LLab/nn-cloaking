@@ -68,22 +68,29 @@ def generate_mesh(
     p3 = geo.addPoint(p.W_total, p.H_total, 0.0, h_elem)
     p4 = geo.addPoint(0.0, p.H_total, 0.0, h_elem)
 
+    top_eval_xs = _resolve_top_eval_xs(cfg, p, geometry)
+
     if cfg.is_reference:
-        # Plain rectangle — no defect
+        # Plain rectangle — no defect. When eval xs are configured, chain
+        # the top edge through them so each is a real corner vertex.
         l_bot = geo.addLine(p1, p2)
         l_right = geo.addLine(p2, p3)
-        l_top = geo.addLine(p3, p4)
+        if top_eval_xs is not None and len(top_eval_xs) > 0:
+            top_lines = _chain_top_edge(
+                geo, p3, p4, top_eval_xs, p.y_top, h_surf, descending=True,
+            )
+        else:
+            top_lines = [geo.addLine(p3, p4)]
         l_left = geo.addLine(p4, p1)
 
-        outer_loop = geo.addCurveLoop([l_bot, l_right, l_top, l_left])
+        outer_loop = geo.addCurveLoop([l_bot, l_right] + top_lines + [l_left])
         geo.addPlaneSurface([outer_loop])
         gmsh.model.geo.synchronize()
-
-        top_lines = [l_top]
     else:
         # Delegate defect cutout + refinement to the geometry object
         top_lines = geometry.build_gmsh_geometry(
             geo, (p1, p2, p3, p4), h_fine, h_elem, h_outside=h_out,
+            top_eval_xs=top_eval_xs, h_surf=h_surf,
         )
 
     # ── surface refinement (common to all geometries) ──
@@ -197,6 +204,86 @@ def _embed_macro_grid_lines(
     return len(pts)
 
 
+def _chain_top_edge(
+    geo,
+    p_start: int,
+    p_end: int,
+    eval_xs: np.ndarray,
+    y_top: float,
+    h_size: float,
+    descending: bool,
+    x_lo: float | None = None,
+    x_hi: float | None = None,
+    endpoint_xs: tuple[float, float] | None = None,
+) -> list[int]:
+    """Build a chain of gmsh lines from ``p_start`` to ``p_end`` along ``y =
+    y_top``, with one intermediate vertex at each ``eval_xs`` value that lies
+    strictly between the segment endpoints.
+
+    ``descending`` is True when traveling from ``p_start`` to ``p_end`` means
+    decreasing x; this controls the sort order of the intermediate xs.
+
+    ``x_lo`` / ``x_hi`` (or ``endpoint_xs``) optionally restrict which eval
+    xs are placed on this segment, used by geometries whose top edge is
+    split into multiple sub-segments around the cloak. Eval xs that
+    coincide with an endpoint within tolerance are dropped (gmsh would
+    otherwise produce a zero-length line).
+
+    Returns the new line tags in traversal order.
+    """
+    if endpoint_xs is not None:
+        if x_lo is None:
+            x_lo = min(endpoint_xs)
+        if x_hi is None:
+            x_hi = max(endpoint_xs)
+
+    span = abs((x_hi - x_lo)) if (x_lo is not None and x_hi is not None) else 1.0
+    tol = max(1e-9, 1e-6 * (span if span else 1.0))
+
+    xs = np.asarray(eval_xs)
+    if x_lo is not None:
+        xs = xs[xs > x_lo + tol]
+    if x_hi is not None:
+        xs = xs[xs < x_hi - tol]
+
+    if len(xs) == 0:
+        return [geo.addLine(p_start, p_end)]
+
+    xs_sorted = np.sort(xs)
+    if descending:
+        xs_sorted = xs_sorted[::-1]
+
+    pts = [p_start]
+    for x in xs_sorted:
+        pts.append(geo.addPoint(float(x), float(y_top), 0.0, h_size))
+    pts.append(p_end)
+    return [geo.addLine(pts[i], pts[i + 1]) for i in range(len(pts) - 1)]
+
+
+def _resolve_top_eval_xs(
+    cfg: SimulationConfig,
+    p: DerivedParams,
+    geometry: CloakGeometry,
+) -> np.ndarray | None:
+    """Eval x-positions to embed as forced top-edge vertices, or None.
+
+    When ``cfg.loss.n_eval_points > 0`` the geometries chain the top edges
+    through these xs so each one is a real corner-of-line vertex (and
+    therefore guaranteed to be a mesh node referenced by the triangulation,
+    independent of refinement). Returns ``None`` when the feature is off,
+    so the legacy single-line top-edge construction is kept unchanged.
+    """
+    n_pts = int(cfg.loss.n_eval_points)
+    if n_pts <= 0:
+        return None
+    from rayleigh_cloak.loss import make_fixed_surface_eval_points
+    return make_fixed_surface_eval_points(
+        geometry, p, n_pts,
+        noise_sigma=float(cfg.loss.eval_noise_sigma),
+        seed=int(cfg.loss.eval_noise_seed),
+    )
+
+
 def _embed_physical_boundary_points(geo, p: DerivedParams, h_elem: float) -> None:
     """Embed points along the physical-domain boundaries into the mesh.
 
@@ -271,8 +358,11 @@ def generate_mesh_full(
     p3 = geo.addPoint(p.W_total, p.H_total, 0.0, h_elem)
     p4 = geo.addPoint(0.0, p.H_total, 0.0, h_elem)
 
+    top_eval_xs = _resolve_top_eval_xs(cfg, p, geometry)
+
     top_lines = geometry.build_gmsh_geometry_full(
         geo, (p1, p2, p3, p4), h_fine, h_elem, h_outside=h_out,
+        top_eval_xs=top_eval_xs, h_surf=h_surf,
     )
 
     if cfg.mesh.embed_macro_grid:

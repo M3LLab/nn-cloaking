@@ -39,6 +39,8 @@ class CloakGeometry(Protocol):
         h_fine: float,
         h_elem: float,
         h_outside: float | None = None,
+        top_eval_xs=None,
+        h_surf: float | None = None,
     ) -> list[int]:
         """Add geometry-specific features to the gmsh model (with defect cutout).
 
@@ -52,6 +54,12 @@ class CloakGeometry(Protocol):
                  characteristic length for corner points.
         h_outside : target mesh size *outside* the cloak. ``None`` falls back
                     to ``h_elem`` for backwards compatibility.
+        top_eval_xs : optional ndarray of forced top-edge x-positions. When
+                    provided, the top edge is constructed as a chain of
+                    lines through these positions so each is a real
+                    triangle vertex (mesh-independent eval surface metric).
+        h_surf : characteristic length for the chained top-edge vertices;
+                 falls back to ``h_fine``.
 
         Returns
         -------
@@ -67,6 +75,8 @@ class CloakGeometry(Protocol):
         h_fine: float,
         h_elem: float,
         h_outside: float | None = None,
+        top_eval_xs=None,
+        h_surf: float | None = None,
     ) -> list[int]:
         """Build full domain (no defect cutout) with cloak vertices embedded.
 

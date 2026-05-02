@@ -24,12 +24,18 @@ class CircularCloakGeometry:
     rc : Outer (cloak boundary) radius.
     x_c : Centre x in extended-mesh coordinates.
     y_c : Centre y in extended-mesh coordinates.
+    y_top : Top-of-domain y (free surface). Required only when chaining
+            forced eval x-positions through the top edge; falls back to
+            ``y_c + 2 * rc + 1e-30`` (a dummy that triggers an error if
+            actually used) so existing callers that don't set it still
+            work for the legacy single-line top edge.
     """
 
     ri: float
     rc: float
     x_c: float
     y_c: float
+    y_top: float | None = None
 
     # ── region membership (JAX-traceable) ─────────────────────────────
 
@@ -97,16 +103,25 @@ class CircularCloakGeometry:
         h_fine: float,
         h_elem: float,
         h_outside: float | None = None,
+        top_eval_xs=None,
+        h_surf: float | None = None,
     ) -> list[int]:
         """Cut out the circular void and add cloak refinement fields.
 
         ``h_outside`` (default = ``h_elem``) is the target mesh size beyond
         the cloak's distance threshold; pass a value > h_elem to coarsen
         the bulk mesh away from cloak/surface.
+
+        ``top_eval_xs`` / ``h_surf``: when provided, the top edge is built
+        as a chain of lines through these forced x-positions so each is a
+        real triangle vertex on the free surface.
         """
         if h_outside is None:
             h_outside = h_elem
+        if h_surf is None:
+            h_surf = h_fine
         p1, p2, p3, p4 = rect_points
+        from rayleigh_cloak.mesh import _chain_top_edge
 
         # Centre and circle points
         pc = geo.addPoint(self.x_c, self.y_c, 0.0, h_fine)
@@ -122,14 +137,22 @@ class CircularCloakGeometry:
         a3 = geo.addCircleArc(pl, pc, pb)
         a4 = geo.addCircleArc(pb, pc, pr)
 
-        # Rectangle edges
+        # Rectangle edges (top edge optionally chained through eval xs)
         l_bot = geo.addLine(p1, p2)
         l_right = geo.addLine(p2, p3)
-        l_top = geo.addLine(p3, p4)
+        if top_eval_xs is not None:
+            top_lines = _chain_top_edge(
+                geo, p3, p4, np.asarray(top_eval_xs), self.y_top, h_surf,
+                descending=True,
+            )
+        else:
+            top_lines = [geo.addLine(p3, p4)]
         l_left = geo.addLine(p4, p1)
 
         # Outer boundary loop
-        outer_loop = geo.addCurveLoop([l_bot, l_right, l_top, l_left])
+        outer_loop = geo.addCurveLoop(
+            [l_bot, l_right] + top_lines + [l_left]
+        )
         # Inner (void) loop — reversed orientation
         inner_loop = geo.addCurveLoop([a1, a2, a3, a4])
         surf = geo.addPlaneSurface([outer_loop, inner_loop])
@@ -169,7 +192,7 @@ class CircularCloakGeometry:
 
         self._cloak_field_tag = f_thresh_cloak
 
-        return [l_top]
+        return top_lines
 
     def build_gmsh_geometry_full(
         self,
@@ -178,24 +201,39 @@ class CircularCloakGeometry:
         h_fine: float,
         h_elem: float,
         h_outside: float | None = None,
+        top_eval_xs=None,
+        h_surf: float | None = None,
     ) -> list[int]:
         """Build full domain mesh (no void cutout) with circle points embedded.
 
         The inner circle points are embedded so the mesh refines around the
         cloak region. Elements inside the void can be removed later via
         ``extract_submesh``.
+
+        See ``build_gmsh_geometry`` for ``top_eval_xs`` / ``h_surf`` semantics.
         """
         if h_outside is None:
             h_outside = h_elem
+        if h_surf is None:
+            h_surf = h_fine
         p1, p2, p3, p4 = rect_points
+        from rayleigh_cloak.mesh import _chain_top_edge
 
-        # Rectangle edges
+        # Rectangle edges (top edge optionally chained through eval xs)
         l_bot = geo.addLine(p1, p2)
         l_right = geo.addLine(p2, p3)
-        l_top = geo.addLine(p3, p4)
+        if top_eval_xs is not None:
+            top_lines = _chain_top_edge(
+                geo, p3, p4, np.asarray(top_eval_xs), self.y_top, h_surf,
+                descending=True,
+            )
+        else:
+            top_lines = [geo.addLine(p3, p4)]
         l_left = geo.addLine(p4, p1)
 
-        outer_loop = geo.addCurveLoop([l_bot, l_right, l_top, l_left])
+        outer_loop = geo.addCurveLoop(
+            [l_bot, l_right] + top_lines + [l_left]
+        )
         surf = geo.addPlaneSurface([outer_loop])
 
         gmsh.model.geo.synchronize()
@@ -245,4 +283,4 @@ class CircularCloakGeometry:
 
         self._cloak_field_tag = f_thresh_cloak
 
-        return [l_top]
+        return top_lines
