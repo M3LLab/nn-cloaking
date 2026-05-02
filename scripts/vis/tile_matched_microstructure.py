@@ -1,0 +1,313 @@
+"""Match each optimised macro cell to its nearest dataset entry by (λ, μ, ρ)
+and tile the 50×50 microstructures into a single image.
+
+For each macro cell of an optimisation result we pick the dataset cell whose
+(λ, μ, ρ) is closest in standardised Euclidean distance (the same standardisation
+used to fit the GMM regulariser, so this is consistent with how the optimiser
+saw the manifold). The matched binary microstructure is laid out at the same
+(ix, iy) location the macro cell occupies.
+
+Usage
+-----
+
+    python -m scripts.vis.tile_matched_microstructure \
+        -p output/cell15_multifreq_cement/optimized_params.npz \
+        -d output/ca_bulk_squared/stiffness.h5 \
+        -c output/cell15_multifreq_cement/config.yaml \
+        -o output/cell15_multifreq_cement/tiled_microstructure.png
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import time
+from pathlib import Path
+
+import h5py
+import matplotlib.pyplot as plt
+import numpy as np
+import yaml
+
+# Reading a possibly-still-being-written h5 is fine without locks.
+os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")
+
+
+def _build_cloak_mask(config_path: Path, n_x: int, n_y: int) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Reproduce CellDecomposition.cloak_mask + cell_centers from the run's config.
+
+    We import the project's ``DerivedParams`` (lightweight — no gmsh/jax) and
+    inline the geometry's ``in_cloak`` formula so this script doesn't pull in
+    the gmsh-loaded geometry module.
+
+    Returns ``(cloak_mask (n_cells,), cell_centers (n_cells, 2), info)`` where
+    info carries the cloak bbox for optional rendering.
+    """
+    # Project's pydantic config + DerivedParams.
+    from rayleigh_cloak.config import load_config, DerivedParams
+
+    cfg = load_config(config_path)
+    dp = DerivedParams.from_config(cfg)
+
+    if cfg.geometry_type == "triangular":
+        x_c, y_top = dp.x_c, dp.y_top
+        a, b, c = dp.a, dp.b, dp.c
+        x_min, x_max = x_c - c, x_c + c
+        y_min, y_max = y_top - b, y_top
+    elif cfg.geometry_type == "circular":
+        x_c, y_c = dp.x_c, dp.y_c
+        ri, rc = dp.ri, dp.rc
+        x_min, x_max = x_c - rc, x_c + rc
+        y_min, y_max = y_c - rc, y_c + rc
+    else:
+        raise ValueError(f"unsupported geometry_type={cfg.geometry_type!r}")
+
+    cell_dx = (x_max - x_min) / n_x
+    cell_dy = (y_max - y_min) / n_y
+    cx = x_min + (np.arange(n_x) + 0.5) * cell_dx
+    cy = y_min + (np.arange(n_y) + 0.5) * cell_dy
+    gx, gy = np.meshgrid(cx, cy, indexing="ij")
+    cell_centers = np.stack([gx.ravel(), gy.ravel()], axis=-1)  # (n_cells, 2)
+
+    if cfg.geometry_type == "triangular":
+        depth = y_top - cell_centers[:, 1]
+        r = np.abs(cell_centers[:, 0] - x_c) / c
+        d1 = a * (1.0 - r)
+        d2 = b * (1.0 - r)
+        cloak_mask = (r <= 1.0) & (depth >= d1) & (depth <= d2)
+    else:  # circular
+        rad = np.sqrt((cell_centers[:, 0] - x_c) ** 2 + (cell_centers[:, 1] - y_c) ** 2)
+        cloak_mask = (rad >= ri) & (rad <= rc)
+
+    info = {
+        "geometry_type": cfg.geometry_type,
+        "x_min": x_min, "x_max": x_max, "y_min": y_min, "y_max": y_max,
+    }
+    return cloak_mask, cell_centers, info
+
+
+def _flat2_to_lame(cell_C_flat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """For ``n_C_params=2`` the flat layout is already [λ, μ]."""
+    return cell_C_flat[:, 0], cell_C_flat[:, 1]
+
+
+def _resolve_grid(config_path: Path | None, n_cells: int) -> tuple[int, int]:
+    """Return (n_x, n_y) for the macro grid.
+
+    Reads from the run's ``config.yaml`` if provided. Otherwise tries to
+    factor ``n_cells`` into the closest-to-square pair as a last resort.
+    """
+    if config_path is not None and config_path.exists():
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f) or {}
+        cells_cfg = cfg.get("cells", {}) or {}
+        if "n_x" in cells_cfg and "n_y" in cells_cfg:
+            nx, ny = int(cells_cfg["n_x"]), int(cells_cfg["n_y"])
+            if nx * ny != n_cells:
+                raise ValueError(
+                    f"config.yaml says n_x*n_y = {nx*ny} but optimized_params has "
+                    f"{n_cells} cells; refusing to guess."
+                )
+            return nx, ny
+    # Fallback: factorise.
+    for nx in range(int(np.sqrt(n_cells)), 0, -1):
+        if n_cells % nx == 0:
+            ny = n_cells // nx
+            print(f"WARNING: no config.yaml; guessing n_x={nx}, n_y={ny}")
+            return nx, ny
+    raise ValueError(f"can't factor n_cells={n_cells} and no config given")
+
+
+def _tile_image(
+    geoms: np.ndarray,           # (n_cells, H, W) uint8
+    n_x: int,
+    n_y: int,
+) -> np.ndarray:
+    """Tile (n_cells, H, W) cells into a single image of shape (n_y*H, n_x*W).
+
+    Cell index convention is ``cell_idx = ix * n_y + iy`` (the codebase's
+    CellDecomposition convention). We place cell (ix, iy) at row (n_y-1-iy)
+    so that y-up is up in the saved image.
+    """
+    n_cells, H, W = geoms.shape
+    assert n_cells == n_x * n_y, f"{n_cells} != {n_x}*{n_y}"
+    canvas = np.zeros((n_y * H, n_x * W), dtype=geoms.dtype)
+    for ix in range(n_x):
+        for iy in range(n_y):
+            idx = ix * n_y + iy
+            row = n_y - 1 - iy        # y-up
+            col = ix
+            canvas[row * H:(row + 1) * H, col * W:(col + 1) * W] = geoms[idx]
+    return canvas
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("-p", "--params", type=Path, required=True,
+                    help="optimized_params.npz with cell_C_flat (n,2) and cell_rho (n,)")
+    ap.add_argument("-d", "--dataset", type=Path,
+                    default=Path("output/ca_bulk_squared/stiffness.h5"),
+                    help="Stiffness HDF5 with lambda_, mu, rho, cells fields.")
+    ap.add_argument("-c", "--config", type=Path, default=None,
+                    help="Run config.yaml to read n_x/n_y from. Default: alongside --params.")
+    ap.add_argument("-o", "--output", type=Path, default=None,
+                    help="Output PNG path (default: <params dir>/tiled_microstructure.png).")
+    ap.add_argument("--rho-weight", type=float, default=1.0,
+                    help="Multiplier on the standardised ρ component when computing distance. "
+                         "1.0 treats ρ on equal footing with λ, μ (recommended). Set <1 to "
+                         "downweight density and let stiffness drive the match.")
+    ap.add_argument("--rng-seed", type=int, default=0,
+                    help="Seed for tie-breaking when multiple entries are exactly equidistant.")
+    args = ap.parse_args()
+
+    # ── load optimisation result ────────────────────────────────────
+    if not args.params.exists():
+        raise SystemExit(f"missing params: {args.params}")
+    npz = np.load(args.params)
+    if "cell_C_flat" not in npz or "cell_rho" not in npz:
+        raise SystemExit(
+            f"{args.params} must contain cell_C_flat and cell_rho "
+            f"(found {npz.files})"
+        )
+    cell_C_flat = npz["cell_C_flat"]
+    cell_rho = npz["cell_rho"]
+    n_cells, n_C_params = cell_C_flat.shape
+    if n_C_params != 2:
+        raise SystemExit(
+            f"this script handles n_C_params=2 (flat2 = [λ, μ]); got {n_C_params}. "
+            "Extend _flat2_to_lame() if you need to handle 6/10/16."
+        )
+    lam_q, mu_q = _flat2_to_lame(cell_C_flat)
+    rho_q = cell_rho
+    print(f"loaded {n_cells} optimised cells from {args.params}")
+
+    # ── grid layout + cloak mask ────────────────────────────────────
+    config_path = args.config if args.config is not None else args.params.parent / "config.yaml"
+    n_x, n_y = _resolve_grid(config_path, n_cells)
+    print(f"grid: n_x={n_x}, n_y={n_y}")
+
+    if not config_path.exists():
+        raise SystemExit(
+            f"--config {config_path} not found; needed to compute cloak_mask. "
+            "Pass --config explicitly."
+        )
+    cloak_mask, _cell_centers, _geo_info = _build_cloak_mask(config_path, n_x, n_y)
+    n_cloak = int(cloak_mask.sum())
+    print(f"cloak cells: {n_cloak}/{n_cells}  ({n_cloak/n_cells:.1%})")
+
+    # ── load dataset (λ, μ, ρ) and standardise ──────────────────────
+    print(f"loading dataset {args.dataset} ...")
+    t0 = time.time()
+    with h5py.File(args.dataset, "r") as f:
+        lam_ds = f["lambda_"][:]
+        mu_ds = f["mu"][:]
+        rho_ds = f["rho"][:]
+        n_ds = lam_ds.size
+    print(f"  {n_ds} dataset cells  ({time.time()-t0:.1f}s)")
+
+    X_ds = np.column_stack([lam_ds, mu_ds, rho_ds]).astype(np.float64)
+    mean = X_ds.mean(axis=0)
+    std = X_ds.std(axis=0)
+    Xs_ds = (X_ds - mean) / std
+
+    # Restrict the query to cloak cells only — non-cloak cells are background
+    # (cement) and there's no point matching them; they'd snap to a near-solid
+    # dataset entry that visually clutters the plot the user wants.
+    cloak_indices = np.where(cloak_mask)[0]
+    X_q_full = np.column_stack([lam_q, mu_q, rho_q]).astype(np.float64)
+    X_q = X_q_full[cloak_indices]
+    Xs_q = (X_q - mean) / std
+    Xs_q[:, 2] *= args.rho_weight                     # downweight ρ if requested
+    Xs_ds_w = Xs_ds.copy()
+    Xs_ds_w[:, 2] *= args.rho_weight
+
+    # ── nearest neighbours (brute force; fine at 90-ish × 156k) ─────
+    print(f"computing nearest neighbours for {cloak_indices.size} cloak cells ...")
+    t0 = time.time()
+    a2 = np.sum(Xs_q * Xs_q, axis=1, keepdims=True)               # (n_cloak, 1)
+    b2 = np.sum(Xs_ds_w * Xs_ds_w, axis=1, keepdims=True).T       # (1, n_ds)
+    cross = Xs_q @ Xs_ds_w.T                                       # (n_cloak, n_ds)
+    d2 = a2 + b2 - 2.0 * cross
+    cloak_match_idx = np.argmin(d2, axis=1).astype(np.int64)      # (n_cloak,)
+    cloak_match_d = np.sqrt(np.maximum(d2[np.arange(cloak_indices.size), cloak_match_idx], 0.0))
+    print(f"  done ({time.time()-t0:.1f}s)")
+    print(
+        f"  match distance (standardised L2):  mean={cloak_match_d.mean():.3f}  "
+        f"median={np.median(cloak_match_d):.3f}  max={cloak_match_d.max():.3f}"
+    )
+
+    # ── pull the matched binary geometries ─────────────────────────
+    # h5py fancy-indexing requires strictly-increasing unique indices, so we
+    # de-duplicate (multiple macro cells can match the same dataset entry)
+    # and then scatter back by inverse map.
+    unique_idx, inverse = np.unique(cloak_match_idx, return_inverse=True)
+    print(f"reading {unique_idx.size} unique matched microstructures ...")
+    t0 = time.time()
+    with h5py.File(args.dataset, "r") as f:
+        unique_geoms = f["cells"][unique_idx.tolist()]            # (n_unique, H, W)
+    cloak_geoms = unique_geoms[inverse]                            # (n_cloak, H, W)
+    print(f"  done ({time.time()-t0:.1f}s)")
+
+    # Build a full (n_cells, H, W) array — non-cloak cells stay zero (= white
+    # in cmap='gray_r'), so they show as empty in the tiled plot.
+    H, W = cloak_geoms.shape[1:]
+    geoms = np.zeros((n_cells, H, W), dtype=np.uint8)
+    geoms[cloak_indices] = cloak_geoms
+
+    # Per-cell match index for the side-car (-1 for non-cloak cells).
+    match_idx = -np.ones(n_cells, dtype=np.int64)
+    match_idx[cloak_indices] = cloak_match_idx
+    match_d = np.full(n_cells, np.nan)
+    match_d[cloak_indices] = cloak_match_d
+
+    # ── tile + plot ────────────────────────────────────────────────
+    canvas = _tile_image(geoms, n_x, n_y)                         # (n_y*H, n_x*W)
+
+    out_path = args.output if args.output else args.params.parent / "tiled_microstructure.png"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig_w = max(8.0, 0.5 * n_x)
+    fig_h = max(6.0, 0.5 * n_y)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    ax.imshow(canvas, cmap="gray_r", interpolation="nearest", aspect="equal")
+    # Cell-boundary grid lines
+    for ix in range(1, n_x):
+        ax.axvline(ix * W - 0.5, color="C3", linewidth=0.4, alpha=0.6)
+    for iy in range(1, n_y):
+        ax.axhline(iy * H - 0.5, color="C3", linewidth=0.4, alpha=0.6)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_title(
+        f"{args.params.parent.name} — {n_x}×{n_y} macro cells, "
+        f"cloak cells replaced by nearest dataset microstructure ({H}×{W})\n"
+        f"cloak={cloak_indices.size}/{n_cells}   "
+        f"match distance (std-L2): mean={cloak_match_d.mean():.2f}, "
+        f"median={np.median(cloak_match_d):.2f}",
+        fontsize=11,
+    )
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    print(f"saved {out_path}")
+
+    # Save the matching alongside the figure for reuse.
+    side_npz = out_path.with_suffix(".npz")
+    np.savez(
+        side_npz,
+        match_idx=match_idx,                # -1 for non-cloak cells
+        match_distance_std=match_d,
+        cloak_mask=cloak_mask,
+        n_x=np.int64(n_x),
+        n_y=np.int64(n_y),
+        H=np.int64(H),
+        W=np.int64(W),
+        feature_mean=mean,
+        feature_std=std,
+        rho_weight=np.float64(args.rho_weight),
+    )
+    print(f"saved {side_npz}")
+
+
+if __name__ == "__main__":
+    main()
