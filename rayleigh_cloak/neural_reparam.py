@@ -20,6 +20,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from rayleigh_cloak.cells import CellDecomposition
+from rayleigh_cloak.material_prior import GMMPrior, gmm_flat_top_penalty
 from rayleigh_cloak.optimize import (
     AdamState,
     adam_init,
@@ -283,6 +284,9 @@ def run_optimization_neural(
     step_callback=None,
     opt_state_init: AdamState | None = None,
     loss_fn=None,
+    gmm_prior: GMMPrior | None = None,
+    lambda_gmm: float = 0.0,
+    n_C_params: int = 2,
 ) -> NeuralOptimizationResult:
     """Run optimization over MLP weights (neural reparameterization).
 
@@ -314,13 +318,22 @@ def run_optimization_neural(
 
     boundary_indices_jnp = jnp.array(boundary_indices)
 
+    use_gmm = gmm_prior is not None and lambda_gmm > 0.0
+
     def _loss_fn(theta):
         params = reparam.decode(theta)
         sol_list = fwd_pred(params)
         u_cloak = sol_list[0]
         L_cloak = _cloak_loss_fn(u_cloak, u_ref_boundary, boundary_indices_jnp)
         L_l2 = l2_regularization(params, params_init)
-        return L_cloak + lambda_l2 * L_l2, L_cloak
+        total = L_cloak + lambda_l2 * L_l2
+        if use_gmm:
+            cell_C, cell_rho = params
+            L_gmm = gmm_flat_top_penalty(
+                cell_C, cell_rho, reparam.cloak_mask, gmm_prior, n_C_params
+            )
+            total = total + lambda_gmm * L_gmm
+        return total, L_cloak
 
     loss_and_grad = jax.value_and_grad(
         lambda t: _loss_fn(t)[0],
@@ -331,7 +344,13 @@ def run_optimization_neural(
     def _get_components(theta):
         params = reparam.decode(theta)
         L_l2 = float(l2_regularization(params, params_init))
-        return L_l2
+        L_gmm = 0.0
+        if use_gmm:
+            cell_C, cell_rho = params
+            L_gmm = float(gmm_flat_top_penalty(
+                cell_C, cell_rho, reparam.cloak_mask, gmm_prior, n_C_params
+            ))
+        return L_l2, L_gmm
 
     for step in range(n_iters):
         # Learning rate schedule
@@ -347,18 +366,20 @@ def run_optimization_neural(
         loss_val_float = float(loss_val)
         loss_history.append(loss_val_float)
 
-        L_l2 = _get_components(theta)
-        L_cloak = loss_val_float - lambda_l2 * L_l2
+        L_l2, L_gmm = _get_components(theta)
+        L_cloak = loss_val_float - lambda_l2 * L_l2 - lambda_gmm * L_gmm
         cloak_history.append(L_cloak)
         l2_history.append(L_l2)
 
         grad_norm = float(jnp.sqrt(sum(
             jnp.sum(l["W"]**2) + jnp.sum(l["b"]**2) for l in grads
         )))
+        gmm_str = f"  GMM = {L_gmm:.4e}" if use_gmm else ""
         print(
             f"  Step {step:4d} | total = {loss_val_float:.4e}"
             f"  cloak_pct = {np.sqrt(max(L_cloak, 0)) * 100:.2f}"
             f"  L2 = {L_l2:.4e}"
+            f"{gmm_str}"
             f"  lr={cur_lr:.2e}"
             f"  |grad|={grad_norm:.4e}"
         )
@@ -429,6 +450,9 @@ def run_optimization_neural_multifreq(
     step_callback=None,
     opt_state_init: AdamState | None = None,
     max_workers: int = 0,
+    gmm_prior: GMMPrior | None = None,
+    lambda_gmm: float = 0.0,
+    n_C_params: int = 2,
 ) -> NeuralOptimizationResult:
     """Run neural-reparam optimization over multiple frequencies in parallel.
 
@@ -513,17 +537,33 @@ def run_optimization_neural_multifreq(
                 *(r[1] for r in results),
             )
 
-            # L2 regularization (frequency-independent, compute once)
+            # L2 + GMM regularisation (frequency-independent, compute once)
             params = reparam.decode(theta)
             L_l2 = float(l2_regularization(params, params_init))
 
-            # Add L2 grad to total
-            l2_grad = jax.grad(
-                lambda t: lambda_l2 * l2_regularization(reparam.decode(t), params_init)
-            )(theta)
-            grads = jax.tree.map(lambda a, b: a + b, total_grad, l2_grad)
+            use_gmm = gmm_prior is not None and lambda_gmm > 0.0
+            if use_gmm:
+                cell_C, cell_rho = params
+                L_gmm = float(gmm_flat_top_penalty(
+                    cell_C, cell_rho, reparam.cloak_mask, gmm_prior, n_C_params
+                ))
+            else:
+                L_gmm = 0.0
 
-            loss_val_float = total_cloak_loss + lambda_l2 * L_l2
+            def _reg_total(t):
+                p = reparam.decode(t)
+                term = lambda_l2 * l2_regularization(p, params_init)
+                if use_gmm:
+                    cC, cr = p
+                    term = term + lambda_gmm * gmm_flat_top_penalty(
+                        cC, cr, reparam.cloak_mask, gmm_prior, n_C_params
+                    )
+                return term
+
+            reg_grad = jax.grad(_reg_total)(theta)
+            grads = jax.tree.map(lambda a, b: a + b, total_grad, reg_grad)
+
+            loss_val_float = total_cloak_loss + lambda_l2 * L_l2 + lambda_gmm * L_gmm
             loss_history.append(loss_val_float)
             cloak_history.append(total_cloak_loss)
             l2_history.append(L_l2)
@@ -537,10 +577,12 @@ def run_optimization_neural_multifreq(
                 f"f*={ft.f_star:.1f}:{float(r[0]):.4e}"
                 for ft, r in zip(freq_targets, results)
             )
+            gmm_str = f"  GMM = {L_gmm:.4e}" if use_gmm else ""
             print(
                 f"  Step {step:4d} | total = {loss_val_float:.4e}"
                 f"  cloak = {total_cloak_loss:.4e}"
                 f"  L2 = {L_l2:.4e}"
+                f"{gmm_str}"
                 f"  lr={cur_lr:.2e}"
                 f"  |grad|={grad_norm:.4e}"
                 f"\n    {per_freq}"
@@ -598,6 +640,9 @@ def run_optimization_neural_multifreq_minimax(
     step_callback=None,
     opt_state_init: AdamState | None = None,
     max_workers: int = 0,
+    gmm_prior: GMMPrior | None = None,
+    lambda_gmm: float = 0.0,
+    n_C_params: int = 2,
 ) -> NeuralOptimizationResult:
     """Minimax multi-frequency optimization: only the worst-case frequency
     contributes to each gradient step.
@@ -676,16 +721,33 @@ def run_optimization_neural_multifreq_minimax(
             worst_loss = per_freq_losses[worst_idx]
             worst_grad = results[worst_idx][1]
 
-            # L2 regularization
+            # L2 + GMM regularisation
             params = reparam.decode(theta)
             L_l2 = float(l2_regularization(params, params_init))
 
-            l2_grad = jax.grad(
-                lambda t: lambda_l2 * l2_regularization(reparam.decode(t), params_init)
-            )(theta)
-            grads = jax.tree.map(lambda a, b: a + b, worst_grad, l2_grad)
+            use_gmm = gmm_prior is not None and lambda_gmm > 0.0
+            if use_gmm:
+                cell_C, cell_rho = params
+                L_gmm = float(gmm_flat_top_penalty(
+                    cell_C, cell_rho, reparam.cloak_mask, gmm_prior, n_C_params
+                ))
+            else:
+                L_gmm = 0.0
 
-            loss_val_float = worst_loss + lambda_l2 * L_l2
+            def _reg_total(t):
+                p = reparam.decode(t)
+                term = lambda_l2 * l2_regularization(p, params_init)
+                if use_gmm:
+                    cC, cr = p
+                    term = term + lambda_gmm * gmm_flat_top_penalty(
+                        cC, cr, reparam.cloak_mask, gmm_prior, n_C_params
+                    )
+                return term
+
+            reg_grad = jax.grad(_reg_total)(theta)
+            grads = jax.tree.map(lambda a, b: a + b, worst_grad, reg_grad)
+
+            loss_val_float = worst_loss + lambda_l2 * L_l2 + lambda_gmm * L_gmm
             loss_history.append(loss_val_float)
             cloak_history.append(worst_loss)
             l2_history.append(L_l2)
@@ -699,9 +761,11 @@ def run_optimization_neural_multifreq_minimax(
                 f"f*={ft.f_star:.2f}:{pfl:.4e}{'*' if i == worst_idx else ''}"
                 for i, (ft, pfl) in enumerate(zip(freq_targets, per_freq_losses))
             )
+            gmm_str = f"  GMM = {L_gmm:.4e}" if use_gmm else ""
             print(
                 f"  Step {step:4d} | worst = {worst_loss:.4e} (f*={worst_f_star:.2f})"
                 f"  L2 = {L_l2:.4e}"
+                f"{gmm_str}"
                 f"  lr={cur_lr:.2e}"
                 f"  |grad|={grad_norm:.4e}"
                 f"\n    {per_freq_str}"

@@ -84,6 +84,104 @@ def transmitted_displacement_ratio(
     return float(np.mean(mag_case)) / (float(np.mean(mag_ref)) + 1e-30)
 
 
+# ── Mesh-independent fixed-position surface metric ──────────────────
+#
+# The legacy node-based metric averages |u| at whichever surface mesh nodes
+# happen to fall in the evaluation region. With unstructured triangular
+# meshes, the *number* and *positions* of those nodes change with each
+# mesh refinement, so the metric itself is mesh-dependent — refining the
+# mesh re-samples a different observable. The functions below sidestep
+# that by evaluating |u| at a set of *fixed* x-positions, interpolated
+# from each mesh's surface nodes. Pass ``cfg.loss.n_eval_points > 0`` to
+# opt in; the legacy mechanism is preserved for ``n_eval_points == 0``.
+
+
+def make_fixed_surface_eval_points(
+    geometry,
+    params,
+    n_points: int,
+    noise_sigma: float = 0.0,
+    seed: int = 0,
+) -> np.ndarray:
+    """Return ``M`` x-coordinates evenly spaced across the free surface beyond
+    the cloak footprint, optionally jittered by Gaussian noise.
+
+    The endpoints of ``[x_off, x_off+W]`` are excluded (avoiding domain corners),
+    and points whose ``(x, y_top)`` lies inside the defect/cloak footprint are
+    dropped — those positions have no free surface in the cloak mesh. The
+    Gaussian noise is added *before* the in-defect filter so that two runs
+    with the same seed produce identical x-arrays (deterministic).
+    """
+    x_left = params.x_off
+    x_right = params.x_off + params.W
+    # ``n_points + 2`` then trim endpoints, so we get exactly n_points interior
+    # samples evenly spaced across the open interval.
+    xs = np.linspace(x_left, x_right, n_points + 2)[1:-1]
+    if noise_sigma > 0:
+        rng = np.random.default_rng(seed)
+        xs = xs + rng.normal(0.0, float(noise_sigma), size=xs.shape)
+        xs = np.clip(xs, x_left, x_right)
+
+    # Drop fixed positions inside the defect footprint (no free surface there).
+    y_top = params.y_top
+    keep = []
+    for x in xs:
+        pt = jnp.array([float(x), float(y_top) - 1e-6])
+        if not bool(geometry.in_defect(pt)) and not bool(geometry.in_cloak(pt)):
+            keep.append(float(x))
+    return np.asarray(keep, dtype=np.float64)
+
+
+def _surface_mag_along_x(
+    u: np.ndarray,
+    mesh,
+    y_top: float,
+    atol: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (sorted-x, |u|-at-those-nodes) for nodes on the top surface.
+
+    ``atol`` defaults to a small relative tolerance based on mesh spread.
+    """
+    pts = np.asarray(mesh.points)
+    if atol is None:
+        atol = 1e-6 * max(1.0, float(np.ptp(pts[:, 1])))
+    is_top = np.isclose(pts[:, 1], y_top, atol=atol)
+    if not np.any(is_top):
+        raise RuntimeError(
+            "No mesh nodes found on the top surface y == y_top "
+            "(this should be impossible given gmsh edge embedding)."
+        )
+    nodes = np.where(is_top)[0]
+    xs = pts[nodes, 0]
+    perm = np.argsort(xs)
+    xs_sorted = xs[perm]
+    mag = displacement_magnitude(u[nodes[perm]])
+    return xs_sorted, mag
+
+
+def transmitted_displacement_ratio_fixed(
+    u_case: np.ndarray,
+    u_ref: np.ndarray,
+    case_mesh,
+    ref_mesh,
+    x_positions: np.ndarray,
+    y_top: float,
+) -> float:
+    """Mesh-independent variant of :func:`transmitted_displacement_ratio`.
+
+    Linearly interpolates ``|u_case|`` and ``|u_ref|`` from each mesh's top-
+    surface nodes onto ``x_positions`` (which the caller has already filtered
+    to lie outside the cloak footprint), then returns the ratio of unweighted
+    means. Because ``x_positions`` is shared across all sweep points, the
+    metric becomes a stable functional of the mesh-converged solution.
+    """
+    case_xs, case_mag = _surface_mag_along_x(u_case, case_mesh, y_top)
+    ref_xs, ref_mag = _surface_mag_along_x(u_ref, ref_mesh, y_top)
+    case_at_x = np.interp(x_positions, case_xs, case_mag)
+    ref_at_x = np.interp(x_positions, ref_xs, ref_mag)
+    return float(np.mean(case_at_x)) / (float(np.mean(ref_at_x)) + 1e-30)
+
+
 def transmission_loss(
     u_cloak: jnp.ndarray,
     u_ref_surface: jnp.ndarray,

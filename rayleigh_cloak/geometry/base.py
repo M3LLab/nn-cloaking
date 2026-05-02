@@ -38,6 +38,7 @@ class CloakGeometry(Protocol):
         rect_points: tuple[int, int, int, int],
         h_fine: float,
         h_elem: float,
+        h_outside: float | None = None,
     ) -> list[int]:
         """Add geometry-specific features to the gmsh model (with defect cutout).
 
@@ -47,7 +48,10 @@ class CloakGeometry(Protocol):
         rect_points : (p1, p2, p3, p4) — bottom-left, bottom-right,
                        top-right, top-left corner point tags.
         h_fine : target mesh size near the cloak
-        h_elem : background mesh size
+        h_elem : reference (legacy "outside") mesh size — also used as the
+                 characteristic length for corner points.
+        h_outside : target mesh size *outside* the cloak. ``None`` falls back
+                    to ``h_elem`` for backwards compatibility.
 
         Returns
         -------
@@ -62,6 +66,7 @@ class CloakGeometry(Protocol):
         rect_points: tuple[int, int, int, int],
         h_fine: float,
         h_elem: float,
+        h_outside: float | None = None,
     ) -> list[int]:
         """Build full domain (no defect cutout) with cloak vertices embedded.
 

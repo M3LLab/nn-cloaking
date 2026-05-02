@@ -72,6 +72,7 @@ class TriangularCloakGeometry:
         rect_points: tuple[int, int, int, int],
         h_fine: float,
         h_elem: float,
+        h_outside: float | None = None,
     ) -> list[int]:
         """Cut out the triangular defect and add cloak refinement fields.
 
@@ -79,12 +80,13 @@ class TriangularCloakGeometry:
         ----------
         geo : ``gmsh.model.geo``
         rect_points : (p1_bl, p2_br, p3_tr, p4_tl)
-        h_fine, h_elem : mesh sizes
-
-        Returns
-        -------
-        top_lines : line tags forming the top boundary
+        h_fine : target mesh size in the cloak / surface refinement zones
+        h_elem : characteristic length for corner points (legacy "background")
+        h_outside : target mesh size *outside* the cloak. ``None`` → h_elem
+                    (back-compat).
         """
+        if h_outside is None:
+            h_outside = h_elem
         p1, p2, p3, p4 = rect_points
 
         # Triangle vertices on the free surface and apex
@@ -131,7 +133,7 @@ class TriangularCloakGeometry:
         f_thresh_cloak = gmsh.model.mesh.field.add("Threshold")
         gmsh.model.mesh.field.setNumber(f_thresh_cloak, "InField", f_dist_cloak)
         gmsh.model.mesh.field.setNumber(f_thresh_cloak, "SizeMin", h_fine)
-        gmsh.model.mesh.field.setNumber(f_thresh_cloak, "SizeMax", h_elem)
+        gmsh.model.mesh.field.setNumber(f_thresh_cloak, "SizeMax", h_outside)
         gmsh.model.mesh.field.setNumber(f_thresh_cloak, "DistMin", 0.0)
         gmsh.model.mesh.field.setNumber(f_thresh_cloak, "DistMax", self.b * 2.0)
 
@@ -146,6 +148,7 @@ class TriangularCloakGeometry:
         rect_points: tuple[int, int, int, int],
         h_fine: float,
         h_elem: float,
+        h_outside: float | None = None,
     ) -> list[int]:
         """Build full domain mesh (no defect cutout) with cloak vertices embedded.
 
@@ -153,6 +156,8 @@ class TriangularCloakGeometry:
         mesh refines around the cloak region, but no hole is cut.  This lets
         both reference and cloak solves share identical node positions.
         """
+        if h_outside is None:
+            h_outside = h_elem
         p1, p2, p3, p4 = rect_points
 
         # Triangle vertices on the free surface and apices
@@ -204,7 +209,7 @@ class TriangularCloakGeometry:
         f_thresh_cloak = gmsh.model.mesh.field.add("Threshold")
         gmsh.model.mesh.field.setNumber(f_thresh_cloak, "InField", f_dist_cloak)
         gmsh.model.mesh.field.setNumber(f_thresh_cloak, "SizeMin", h_fine)
-        gmsh.model.mesh.field.setNumber(f_thresh_cloak, "SizeMax", h_elem)
+        gmsh.model.mesh.field.setNumber(f_thresh_cloak, "SizeMax", h_outside)
         gmsh.model.mesh.field.setNumber(f_thresh_cloak, "DistMin", 0.0)
         gmsh.model.mesh.field.setNumber(f_thresh_cloak, "DistMax", self.b * 2.0)
 

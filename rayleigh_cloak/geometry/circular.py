@@ -96,19 +96,16 @@ class CircularCloakGeometry:
         rect_points: tuple[int, int, int, int],
         h_fine: float,
         h_elem: float,
+        h_outside: float | None = None,
     ) -> list[int]:
         """Cut out the circular void and add cloak refinement fields.
 
-        Parameters
-        ----------
-        geo : ``gmsh.model.geo``
-        rect_points : (p1_bl, p2_br, p3_tr, p4_tl) corner point tags
-        h_fine, h_elem : mesh sizes
-
-        Returns
-        -------
-        top_lines : line tags forming the top boundary
+        ``h_outside`` (default = ``h_elem``) is the target mesh size beyond
+        the cloak's distance threshold; pass a value > h_elem to coarsen
+        the bulk mesh away from cloak/surface.
         """
+        if h_outside is None:
+            h_outside = h_elem
         p1, p2, p3, p4 = rect_points
 
         # Centre and circle points
@@ -166,7 +163,7 @@ class CircularCloakGeometry:
         f_thresh_cloak = gmsh.model.mesh.field.add("Threshold")
         gmsh.model.mesh.field.setNumber(f_thresh_cloak, "InField", f_dist_cloak)
         gmsh.model.mesh.field.setNumber(f_thresh_cloak, "SizeMin", h_fine)
-        gmsh.model.mesh.field.setNumber(f_thresh_cloak, "SizeMax", h_elem)
+        gmsh.model.mesh.field.setNumber(f_thresh_cloak, "SizeMax", h_outside)
         gmsh.model.mesh.field.setNumber(f_thresh_cloak, "DistMin", 0.0)
         gmsh.model.mesh.field.setNumber(f_thresh_cloak, "DistMax", self.rc)
 
@@ -180,6 +177,7 @@ class CircularCloakGeometry:
         rect_points: tuple[int, int, int, int],
         h_fine: float,
         h_elem: float,
+        h_outside: float | None = None,
     ) -> list[int]:
         """Build full domain mesh (no void cutout) with circle points embedded.
 
@@ -187,6 +185,8 @@ class CircularCloakGeometry:
         cloak region. Elements inside the void can be removed later via
         ``extract_submesh``.
         """
+        if h_outside is None:
+            h_outside = h_elem
         p1, p2, p3, p4 = rect_points
 
         # Rectangle edges
@@ -239,7 +239,7 @@ class CircularCloakGeometry:
         f_thresh_cloak = gmsh.model.mesh.field.add("Threshold")
         gmsh.model.mesh.field.setNumber(f_thresh_cloak, "InField", f_dist_cloak)
         gmsh.model.mesh.field.setNumber(f_thresh_cloak, "SizeMin", h_fine)
-        gmsh.model.mesh.field.setNumber(f_thresh_cloak, "SizeMax", h_elem)
+        gmsh.model.mesh.field.setNumber(f_thresh_cloak, "SizeMax", h_outside)
         gmsh.model.mesh.field.setNumber(f_thresh_cloak, "DistMin", 0.0)
         gmsh.model.mesh.field.setNumber(f_thresh_cloak, "DistMax", self.rc)
 

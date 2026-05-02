@@ -13,6 +13,34 @@ from rayleigh_cloak.config import DerivedParams, SimulationConfig
 from rayleigh_cloak.geometry.base import CloakGeometry
 
 
+def _resolve_mesh_sizes(cfg: SimulationConfig, p: DerivedParams) -> tuple[float, float, float, float]:
+    """Compute (h_elem, h_in, h_out, h_surf) from the legacy + new MeshConfig knobs.
+
+    - h_elem  : base element size derived from nx_total / ny_total. Kept for
+                back-compat: used as corner-point characteristic length.
+    - h_in    : target inside the cloak       = h_elem / refinement_factor_cloak
+    - h_out   : target outside (away from surface and cloak)
+                                              = h_elem / refinement_factor_outside
+    - h_surf  : target near the free surface  = h_elem / refinement_factor_surface
+
+    The two ``_cloak`` and ``_surface`` factors fall back to the legacy
+    ``refinement_factor`` so configs predating these fields are unaffected.
+    """
+    h_elem = min(p.W_total / p.nx_total, p.H_total / p.ny_total)
+    rf_cloak = cfg.mesh.refinement_factor_cloak
+    if rf_cloak is None:
+        rf_cloak = cfg.mesh.refinement_factor
+    rf_surf = cfg.mesh.refinement_factor_surface
+    if rf_surf is None:
+        rf_surf = rf_cloak
+    rf_out = cfg.mesh.refinement_factor_outside
+
+    h_in = h_elem / float(rf_cloak)
+    h_out = h_elem / float(rf_out)
+    h_surf = h_elem / float(rf_surf)
+    return h_elem, h_in, h_out, h_surf
+
+
 def generate_mesh(
     cfg: SimulationConfig,
     params: DerivedParams,
@@ -27,9 +55,7 @@ def generate_mesh(
     Returns a ``jax_fem.generate_mesh.Mesh`` instance.
     """
     p = params
-    h_elem = min(p.W_total / p.nx_total, p.H_total / p.ny_total)
-    h_fine = h_elem / cfg.mesh.refinement_factor
-    h_surf = h_fine
+    h_elem, h_fine, h_out, h_surf = _resolve_mesh_sizes(cfg, p)
 
     gmsh.initialize()
     gmsh.option.setNumber("General.Verbosity", 1)
@@ -57,7 +83,7 @@ def generate_mesh(
     else:
         # Delegate defect cutout + refinement to the geometry object
         top_lines = geometry.build_gmsh_geometry(
-            geo, (p1, p2, p3, p4), h_fine, h_elem,
+            geo, (p1, p2, p3, p4), h_fine, h_elem, h_outside=h_out,
         )
 
     # ── surface refinement (common to all geometries) ──
@@ -68,7 +94,7 @@ def generate_mesh(
     f_thresh_surf = gmsh.model.mesh.field.add("Threshold")
     gmsh.model.mesh.field.setNumber(f_thresh_surf, "InField", f_dist_surf)
     gmsh.model.mesh.field.setNumber(f_thresh_surf, "SizeMin", h_surf)
-    gmsh.model.mesh.field.setNumber(f_thresh_surf, "SizeMax", h_elem)
+    gmsh.model.mesh.field.setNumber(f_thresh_surf, "SizeMax", h_out)
     gmsh.model.mesh.field.setNumber(f_thresh_surf, "DistMin", 0.0)
     gmsh.model.mesh.field.setNumber(f_thresh_surf, "DistMax", p.lambda_star)
 
@@ -101,6 +127,74 @@ def generate_mesh(
     cells = msh.cells_dict["triangle"]
 
     return Mesh(points, cells, ele_type=cfg.mesh.ele_type)
+
+
+def _embed_macro_grid_lines(
+    cfg: SimulationConfig,
+    geometry: CloakGeometry,
+    h_size: float,
+) -> int:
+    """Embed the macro-grid's interior lines as 1-D constraints in the surface.
+
+    Forces gmsh to put nodes along each macro-cell boundary, so no triangular
+    element straddles a discontinuity in the piecewise-constant material
+    field. Each element ends up entirely inside one macro cell and its single
+    quadrature point reads an unambiguous (λ, μ, ρ).
+
+    Returns the number of internal lines embedded (for logging).
+
+    Notes
+    -----
+    Must be called *after* the geometry has built the surface (so that
+    ``gmsh.model.getEntities(dim=2)`` returns it) but *before*
+    ``gmsh.model.mesh.generate``.
+    """
+    n_x = cfg.cells.n_x
+    n_y = cfg.cells.n_y
+    if hasattr(geometry, "bbox"):
+        x_min, x_max, y_min, y_max = geometry.bbox()
+    else:
+        # Triangular geometry fallback (matches CellDecomposition).
+        x_min = geometry.x_c - geometry.c
+        x_max = geometry.x_c + geometry.c
+        y_min = geometry.y_top - geometry.b
+        y_max = geometry.y_top
+
+    cell_dx = (x_max - x_min) / n_x
+    cell_dy = (y_max - y_min) / n_y
+
+    geo = gmsh.model.geo
+
+    # Strategy: embed *only* the (n_x+1)*(n_y+1) lattice points, not the
+    # interior lines themselves. gmsh's geo kernel can't auto-split crossing
+    # embedded curves ("Unable to recover the edge"), so trying to embed the
+    # full grid of lines fails. Just pinning nodes at every lattice point —
+    # combined with a target element size ≈ cell width inside the cloak —
+    # forces gmsh to produce small triangles whose vertices are lattice
+    # nodes; those triangles lie entirely inside one macro cell and never
+    # straddle a discontinuity.
+    pts = []
+    for i in range(n_x + 1):
+        x = x_min + i * cell_dx
+        for j in range(n_y + 1):
+            y = y_min + j * cell_dy
+            # Skip points exactly on the bbox boundary (i==0/n_x and j==0/n_y).
+            # The mesh already has nodes on the cloak bbox via the geometry's
+            # outer rectangle / triangle-vertex constraints — embedding co-
+            # located bbox-edge points causes gmsh duplicate-node errors.
+            if i == 0 or i == n_x or j == 0 or j == n_y:
+                continue
+            pts.append(geo.addPoint(x, y, 0.0, h_size))
+
+    geo.synchronize()
+    surfaces = gmsh.model.getEntities(dim=2)
+    if not surfaces:
+        raise RuntimeError("No 2-D surface found to embed macro-grid lines into.")
+    surf_tag = surfaces[0][1]
+
+    if pts:
+        gmsh.model.mesh.embed(0, pts, 2, surf_tag)
+    return len(pts)
 
 
 def _embed_physical_boundary_points(geo, p: DerivedParams, h_elem: float) -> None:
@@ -165,9 +259,7 @@ def generate_mesh_full(
     (homogeneous material) and, after ``extract_submesh``, for the cloak solve.
     """
     p = params
-    h_elem = min(p.W_total / p.nx_total, p.H_total / p.ny_total)
-    h_fine = h_elem / cfg.mesh.refinement_factor
-    h_surf = h_fine
+    h_elem, h_fine, h_out, h_surf = _resolve_mesh_sizes(cfg, p)
 
     gmsh.initialize()
     gmsh.option.setNumber("General.Verbosity", 1)
@@ -180,8 +272,13 @@ def generate_mesh_full(
     p4 = geo.addPoint(0.0, p.H_total, 0.0, h_elem)
 
     top_lines = geometry.build_gmsh_geometry_full(
-        geo, (p1, p2, p3, p4), h_fine, h_elem,
+        geo, (p1, p2, p3, p4), h_fine, h_elem, h_outside=h_out,
     )
+
+    if cfg.mesh.embed_macro_grid:
+        n_emb = _embed_macro_grid_lines(cfg, geometry, h_size=h_fine)
+        # Don't print at module level (called from inside the inner loop in
+        # benchmarks); leave the message to the caller if it wants.
 
     # ── surface refinement (same as generate_mesh) ──
     f_dist_surf = gmsh.model.mesh.field.add("Distance")
@@ -191,7 +288,7 @@ def generate_mesh_full(
     f_thresh_surf = gmsh.model.mesh.field.add("Threshold")
     gmsh.model.mesh.field.setNumber(f_thresh_surf, "InField", f_dist_surf)
     gmsh.model.mesh.field.setNumber(f_thresh_surf, "SizeMin", h_surf)
-    gmsh.model.mesh.field.setNumber(f_thresh_surf, "SizeMax", h_elem)
+    gmsh.model.mesh.field.setNumber(f_thresh_surf, "SizeMax", h_out)
     gmsh.model.mesh.field.setNumber(f_thresh_surf, "DistMin", 0.0)
     gmsh.model.mesh.field.setNumber(f_thresh_surf, "DistMax", p.lambda_star)
 
@@ -208,7 +305,9 @@ def generate_mesh_full(
     # The physical domain sits inside the PML region.  Embedding these
     # four lines forces gmsh to place nodes exactly on them, so that
     # boundary node selection needs no spatial tolerance.
-    _embed_physical_boundary_points(geo, p, h_elem)
+    # Embed boundary constraint points at h_out spacing so they don't force
+    # the bulk mesh finer than the requested outside size.
+    _embed_physical_boundary_points(geo, p, h_out)
 
     gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
     gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)

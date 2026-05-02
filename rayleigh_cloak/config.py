@@ -51,11 +51,38 @@ class AbsorbingConfig(BaseModel):
 
 
 class MeshConfig(BaseModel):
+    """Mesh-generation knobs.
+
+    The cloak mesh is built from three target element sizes derived from a
+    common base ``h_elem = min(W_total/nx_total, H_total/ny_total)``:
+
+      - inside the cloak       : ``h_elem / refinement_factor_cloak``
+      - far from the surface   : ``h_elem / refinement_factor_outside``
+      - near the free surface  : ``h_elem / refinement_factor_surface``
+
+    For backwards compatibility, the ``_cloak`` and ``_surface`` factors fall
+    back to the legacy ``refinement_factor`` when unset, and ``_outside``
+    defaults to 1.0 (the prior behaviour). Set ``refinement_factor_outside``
+    *below* 1.0 to coarsen the mesh away from cloak/surface (e.g. 0.5 → 2×
+    larger elements there).
+    """
+    model_config = {"extra": "ignore"}
     n_pml_x: int = 32
     n_pml_y: int = 32
     nx_phys: int = 200
     ny_phys: int = 60
     refinement_factor: int = 4
+    refinement_factor_cloak: float | None = None
+    refinement_factor_outside: float = 1.0
+    refinement_factor_surface: float | None = None
+    # When true, the (n_x-1) + (n_y-1) interior macro-grid lines are embedded
+    # as 1D constraints in the gmsh surface, so no FEM element straddles a
+    # macro-cell boundary. The element-to-cell map becomes exact, eliminating
+    # the alignment-noise that otherwise affects piecewise-constant material
+    # coefficients across mesh refinements. Default false (legacy behaviour).
+    # Currently only honoured in the full-mesh path (generate_mesh_full); the
+    # defect-cutout path silently ignores it.
+    embed_macro_grid: bool = False
     ele_type: str = "TRI3"
 
 
@@ -109,6 +136,34 @@ class MultiFreqConfig(BaseModel):
     max_workers: int = 0           # thread-pool size; 0 → len(f_stars)
 
 
+class MaterialCementGMMConfig(BaseModel):
+    """Dataset-prior penalty over (λ, μ, ρ) using a fitted Gaussian Mixture.
+
+    Pushes the optimiser toward (λ, μ, ρ) regions actually populated by the
+    cellular-chiral dataset. The penalty is a flat-top:
+    ``max(0, threshold - log p(λ, μ, ρ))`` averaged over cloak cells, with
+    threshold τ stored inside the .npz at fit time.
+
+    Fit with ``python -m dataset.cellular_chiral.fit_gmm``. Only cloak cells
+    contribute — background cells are physically valid by construction.
+    """
+    model_config = {"extra": "ignore"}
+    enabled: bool = False
+    path: str = "output/ca_bulk_squared/gmm_lambda_mu_rho.npz"
+    weight: float = 1.0
+
+
+class RegularizationsConfig(BaseModel):
+    """Sub-section of LossConfig for material/geometry regularisations.
+
+    Distinct from the ``lambda_l2`` / ``lambda_neighbor`` knobs on
+    ``OptimizationConfig`` because these are *prior-on-the-output*
+    penalties tied to a learned dataset, not gradient-flow regularisers.
+    """
+    model_config = {"extra": "ignore"}
+    material_cement_GMM: MaterialCementGMMConfig = MaterialCementGMMConfig()
+
+
 class LossConfig(BaseModel):
     """Settings for cloaking loss computation.
 
@@ -123,6 +178,17 @@ class LossConfig(BaseModel):
     model_config = {"extra": "ignore"}
     type: Literal["right_boundary", "top_surface", "outside_cloak"] = "right_boundary"
     multi_freq: MultiFreqConfig = MultiFreqConfig()
+    regularizations: RegularizationsConfig = RegularizationsConfig()
+    # Mesh-independent surface metric: when ``n_eval_points > 0``, the
+    # validation/benchmark scripts evaluate ``<|u|>`` at this many fixed
+    # x-positions on the free surface (interpolated from mesh nodes) rather
+    # than averaging over a mesh-dependent set of surface nodes. Default 0
+    # falls back to the legacy node-based metric.
+    n_eval_points: int = 0
+    eval_noise_sigma: float = 0.0   # Gaussian noise on the x-positions, in
+                                     # physical units, to break resonance with
+                                     # any test wavelength (recommended ~λ*/200).
+    eval_noise_seed: int = 0
 
 
 class NeuralReparamConfig(BaseModel):

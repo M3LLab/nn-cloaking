@@ -26,6 +26,7 @@ from rayleigh_cloak.optimize import (
     get_right_boundary_indices,
     run_optimization,
 )
+from rayleigh_cloak.material_prior import GMMPrior, load_gmm_prior
 from rayleigh_cloak.neural_reparam import (
     FreqTarget,
     NeuralOptimizationResult,
@@ -353,6 +354,19 @@ def solve_optimization_neural(
     opt_cfg = config.optimization
     mf = config.loss.multi_freq
 
+    # Optional dataset-prior penalty (loaded once, reused across freqs).
+    gmm_cfg = config.loss.regularizations.material_cement_GMM
+    gmm_prior: GMMPrior | None = None
+    if gmm_cfg.enabled:
+        print(f"=== Loading material-cement GMM prior from {gmm_cfg.path} ===")
+        gmm_prior = load_gmm_prior(gmm_cfg.path)
+        print(
+            f"  K={int(gmm_prior.weights.shape[0])} components, "
+            f"weight={gmm_cfg.weight}, threshold={float(gmm_prior.threshold):.4f}"
+        )
+    lambda_gmm = gmm_cfg.weight if gmm_cfg.enabled else 0.0
+    n_C_params = config.cells.n_C_params
+
     # ── Multi-frequency path ───────────────────────────────────────
     # Build frequency list from either f_stars or f_min/f_max/f_step
     if mf.f_min is not None and mf.f_max is not None and mf.f_step is not None:
@@ -418,6 +432,9 @@ def solve_optimization_neural(
                 step_callback=step_callback,
                 opt_state_init=loaded_opt_state,
                 max_workers=mf.max_workers,
+                gmm_prior=gmm_prior,
+                lambda_gmm=lambda_gmm,
+                n_C_params=n_C_params,
             )
         else:
             print("=== Step 6: Optimising (multi-freq neural reparam) ===")
@@ -436,6 +453,9 @@ def solve_optimization_neural(
                 step_callback=step_callback,
                 opt_state_init=loaded_opt_state,
                 max_workers=mf.max_workers,
+                gmm_prior=gmm_prior,
+                lambda_gmm=lambda_gmm,
+                n_C_params=n_C_params,
             )
         return result
 
@@ -472,6 +492,9 @@ def solve_optimization_neural(
         step_callback=step_callback,
         opt_state_init=loaded_opt_state,
         loss_fn=loss_fn,
+        gmm_prior=gmm_prior,
+        lambda_gmm=lambda_gmm,
+        n_C_params=n_C_params,
     )
     return result
 
