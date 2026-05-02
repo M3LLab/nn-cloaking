@@ -290,8 +290,8 @@ def main() -> None:
     #   cloak material (microstructure 1)  → dark gray
     #   cloak void (microstructure 0)      → off-white (so brown stays unique
     #                                         to truly-outside cells)
-    bg_rgb = np.array([200, 160,  99], dtype=np.uint8)   # #c8a063
-    fg_rgb = np.array([ 70,  70,  70], dtype=np.uint8)   # #2e2e2e
+    bg_rgb = np.array([238, 232, 170], dtype=np.uint8)   # #c8a063
+    fg_rgb = np.array([ 90,  90,  90], dtype=np.uint8)   # #2e2e2e
     void_rgb = np.array([245, 245, 240], dtype=np.uint8) # #f5f5f0
     defect_rgb = np.array([255, 255, 255], dtype=np.uint8)
 
