@@ -46,16 +46,24 @@ class GMMPrior:
     threshold: jnp.ndarray
 
 
+# Positions of dataset log-p quantiles saved by ``fit_gmm.py`` in
+# ``log_p_quantiles``. Kept in sync with ``dataset.cellular_chiral.fit_gmm``.
+_LOG_P_QUANTILE_POSITIONS = (0.01, 0.05, 0.25, 0.50, 0.75)
+
+
 def load_gmm_prior(
     path: str | Path,
     dtype=jnp.float32,
-    threshold: float | None = None,
+    quantile: float | None = None,
 ) -> GMMPrior:
     """Load a .npz produced by ``fit_gmm.py`` into a :class:`GMMPrior`.
 
-    Pass ``threshold`` to override the τ stored in the file; ``None`` keeps
-    the value baked in at fit time. The GMM density itself is unchanged, so
-    no refit is needed to try a different flat-top cutoff.
+    Pass ``quantile`` ∈ [0.01, 0.75] to override the flat-top threshold τ:
+    the dataset log-p quantile at that position becomes τ, so cells whose
+    log p falls below it get penalised. Lower quantile → looser margin
+    (only deep outliers penalised); higher → stricter (push toward the
+    densest part of the manifold). ``None`` keeps the τ baked in at fit
+    time. The GMM density itself is unchanged, so no refit is needed.
     """
     data = np.load(str(path), allow_pickle=True)
     cov_type = str(data["covariance_type"])
@@ -64,7 +72,18 @@ def load_gmm_prior(
             f"GMMPrior currently supports covariance_type='full' only; "
             f"got {cov_type!r}. Refit with `--covariance-type=full`."
         )
-    tau = float(data["threshold"]) if threshold is None else float(threshold)
+    if quantile is None:
+        tau = float(data["threshold"])
+    else:
+        q_lo, q_hi = _LOG_P_QUANTILE_POSITIONS[0], _LOG_P_QUANTILE_POSITIONS[-1]
+        if not (q_lo <= quantile <= q_hi):
+            raise ValueError(
+                f"quantile must be in [{q_lo}, {q_hi}] (the range of dataset "
+                f"log-p quantiles stored in the .npz); got {quantile}"
+            )
+        tau = float(np.interp(
+            quantile, _LOG_P_QUANTILE_POSITIONS, np.asarray(data["log_p_quantiles"]),
+        ))
     return GMMPrior(
         weights=jnp.asarray(data["weights"], dtype=dtype),
         means=jnp.asarray(data["means"], dtype=dtype),

@@ -107,7 +107,17 @@ class CellConfig(BaseModel):
     n_x: int = 10                        # cells in x direction within cloak bbox
     n_y: int = 10                        # cells in y direction
     n_C_params: Literal[2, 4, 6, 10, 16] = 6   # 2=isotropic (λ,μ), 6=block-diag Cosserat (recommended), 16=full voigt4
-    symmetrize_init: bool = False        # symmetrize C_eff (minor symmetry) when building init params
+    symmetrize_init: bool = False        # symmetrize C_eff (minor symmetry) when building init params (pushforward only)
+    # "pushforward":      transformation-elasticity seed (anisotropic, off-manifold).
+    # "homogeneous":      every cell starts at background (C0, rho0) — pure cement,
+    #                     also off-manifold (stiffer than the porous CA cells).
+    # "dataset_centroid": cloak cells start at the (λ, μ, ρ) centroid of the dataset
+    #                     pulled from `init_path`; near-zero GMM penalty at step 0.
+    init: Literal["pushforward", "homogeneous", "dataset_centroid"] = "pushforward"
+    # Required when init="dataset_centroid": path to the GMM .npz produced by
+    # `python -m dataset.cellular_chiral.fit_gmm` (its `feature_mean` field is
+    # the centroid).
+    init_path: str | None = None
 
 
 class MultiFreqConfig(BaseModel):
@@ -151,7 +161,10 @@ class MaterialCementGMMConfig(BaseModel):
     enabled: bool = False
     path: str = "output/ca_bulk_squared/gmm_lambda_mu_rho.npz"
     weight: float = 1.0
-    threshold: float | None = None  # override the τ stored in the .npz; None → use file value
+    # Quantile of the dataset log-p distribution used as τ. Must lie in the
+    # range of quantiles stored in the .npz (currently [0.01, 0.75]).
+    # Lower → looser flat-top, higher → stricter. None → use τ baked in at fit.
+    quantile: float | None = None
 
 
 class RegularizationsConfig(BaseModel):

@@ -153,6 +153,8 @@ def solve_cell_based(config: SimulationConfig) -> SolutionResult:
         geometry, C0, params.rho0, cell_decomp,
         n_C_params=config.cells.n_C_params,
         symmetrize_init=config.cells.symmetrize_init,
+        init=config.cells.init,
+        init_path=config.cells.init_path,
     )
     print(f"  {cell_decomp.n_cells} total cells, "
           f"{cell_decomp.n_cloak_cells} in cloak")
@@ -204,6 +206,8 @@ def solve_optimization(config: SimulationConfig, step_callback=None) -> Optimiza
         geometry, C0, params.rho0, cell_decomp,
         n_C_params=config.cells.n_C_params,
         symmetrize_init=config.cells.symmetrize_init,
+        init=config.cells.init,
+        init_path=config.cells.init_path,
     )
 
     print(f"  {cell_decomp.n_cells} total cells, "
@@ -310,6 +314,8 @@ def solve_optimization_neural(
         geometry, C0, params.rho0, cell_decomp,
         n_C_params=config.cells.n_C_params,
         symmetrize_init=config.cells.symmetrize_init,
+        init=config.cells.init,
+        init_path=config.cells.init_path,
     )
     print(f"  {cell_decomp.n_cells} total cells, "
           f"{cell_decomp.n_cloak_cells} in cloak")
@@ -359,7 +365,7 @@ def solve_optimization_neural(
     gmm_prior: GMMPrior | None = None
     if gmm_cfg.enabled:
         print(f"=== Loading material-cement GMM prior from {gmm_cfg.path} ===")
-        gmm_prior = load_gmm_prior(gmm_cfg.path, threshold=gmm_cfg.threshold)
+        gmm_prior = load_gmm_prior(gmm_cfg.path, quantile=gmm_cfg.quantile)
         print(
             f"  K={int(gmm_prior.weights.shape[0])} components, "
             f"weight={gmm_cfg.weight}, threshold={float(gmm_prior.threshold):.4f}"
@@ -546,6 +552,8 @@ def solve_optimization_neural_topo(
         geometry, C0, params.rho0, coarse_decomp,
         n_C_params=config.cells.n_C_params,
         symmetrize_init=config.cells.symmetrize_init,
+        init=config.cells.init,
+        init_path=config.cells.init_path,
     )
     print(f"  Coarse: {coarse_decomp.n_cells} cells, "
           f"{coarse_decomp.n_cloak_cells} in cloak")

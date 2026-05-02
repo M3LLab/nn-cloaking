@@ -5,7 +5,11 @@ All functions are pure (no global state) and JAX-traceable where needed.
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Literal
+
 import jax.numpy as jnp
+import numpy as np
 
 from rayleigh_cloak.geometry.base import CloakGeometry
 
@@ -351,6 +355,8 @@ class CellMaterial:
         cell_decomp: CellDecomposition,
         n_C_params: int = 4,
         symmetrize_init: bool = False,
+        init: Literal["pushforward", "homogeneous", "dataset_centroid"] = "pushforward",
+        init_path: str | Path | None = None,
     ):
         self.geometry = geometry
         self.C0 = C0
@@ -358,28 +364,70 @@ class CellMaterial:
         self.cell_decomp = cell_decomp
         self.n_C_params = n_C_params
         self.symmetrize_init = symmetrize_init
+        self.init = init
+        self.init_path = init_path
         self.to_flat, self.from_flat = _get_converters(n_C_params)
 
         self.cell_C_flat, self.cell_rho = self._initialize()
 
     def _initialize(self):
-        """Compute initial per-cell C and rho from the continuous push-forward."""
+        """Compute initial per-cell C and rho.
+
+        Modes:
+          * ``pushforward``       — continuous transformation-elasticity seed at
+            each cloak cell's centre. Anisotropic, sits outside the cement
+            microstructure manifold (high GMM penalty).
+          * ``homogeneous``       — every cell starts at the background
+            ``(C0, rho0)`` (cement). Pure cement is also outside the
+            microstructure manifold (much stiffer than the porous CA cells).
+          * ``dataset_centroid``  — cloak cells start at the dataset's
+            ``(λ, μ, ρ)`` centroid pulled from ``init_path`` (a GMM .npz
+            produced by ``fit_gmm.py``). Inside the manifold by construction,
+            so the GMM prior is near-zero at step 0.
+        Background cells always stay at ``(C0, rho0)``.
+        """
         centers = self.cell_decomp.cell_centers  # (n_cells, 2)
         mask = self.cell_decomp.cloak_mask        # (n_cells,)
 
         C0_flat = self.to_flat(self.C0)
 
+        if self.init == "dataset_centroid":
+            if self.init_path is None:
+                raise ValueError(
+                    "init='dataset_centroid' requires init_path pointing at a "
+                    "GMM .npz (e.g. output/ca_bulk_squared/gmm_lambda_mu_rho.npz)"
+                )
+            data = np.load(str(self.init_path), allow_pickle=True)
+            order = [str(s) for s in np.asarray(data["feature_order"])]
+            if order != ["lambda", "mu", "rho"]:
+                raise ValueError(
+                    f"unexpected feature_order in {self.init_path}: {order}; "
+                    "expected ['lambda', 'mu', 'rho']"
+                )
+            lam_c, mu_c, rho_c = (float(v) for v in np.asarray(data["feature_mean"]))
+            cloak_C_flat = self.to_flat(C_iso(lam_c, mu_c))
+            cloak_rho = rho_c
+        elif self.init == "homogeneous":
+            cloak_C_flat = C0_flat
+            cloak_rho = self.rho0
+        else:
+            cloak_C_flat = None  # filled per-cell below
+            cloak_rho = None
+
         cell_C_list = []
         cell_rho_list = []
         for i, center in enumerate(centers):
-            if mask[i]:
+            if not mask[i]:
+                cell_C_list.append(C0_flat)
+                cell_rho_list.append(self.rho0)
+            elif self.init == "pushforward":
                 x = jnp.array(center)
                 C_i = C_eff(x, self.geometry, self.C0, symmetrize=self.symmetrize_init)
                 cell_C_list.append(self.to_flat(C_i))
                 cell_rho_list.append(float(rho_eff(x, self.geometry, self.rho0)))
             else:
-                cell_C_list.append(C0_flat)
-                cell_rho_list.append(self.rho0)
+                cell_C_list.append(cloak_C_flat)
+                cell_rho_list.append(cloak_rho)
 
         return jnp.stack(cell_C_list), jnp.array(cell_rho_list)
 
