@@ -1,8 +1,29 @@
-"""Circular annular cloak geometry (Nassar et al., 2018).
+"""Circular annular cloak geometry with a regularised radial transformation.
 
-The circular cloak maps a point at the origin to a circle of radius ri,
-creating a void surrounded by an annular cloaking region [ri, rc]. The
-coordinate transformation is the standard Pendry-type blow-up.
+The cloak maps the virtual annulus ``eps <= R <= b`` onto the physical annulus
+``a <= r <= b`` by a purely radial map ``r = f(R)``, ``theta = Theta``
+(Chatzopoulos et al., IJES 2023, Eqs. 11-15 and Appendix Eqs. 30-34; Kohn et
+al. 2014 for the ``eps`` regularisation). Outside ``r = b`` the map is the
+identity. ``eps = 0`` is the singular ideal (Pendry-type) cloak; ``eps > 0`` is
+a *near*-cloak whose exterior field equals that of a traction-free hole of
+radius ``eps`` in the homogeneous background.
+
+Supported maps (``radial_map``):
+
+``linear``    (C1-eps, N = 1)  r = a + (b - a)(R - eps)/(b - eps)
+``quadratic`` (C2-eps)         r = A2 R^2 + A1 R + A0,  dr/dR(b) = 1
+
+Deformation gradient in the local polar frame (F = dx/dX, both frames share
+e_r, e_theta because theta = Theta)::
+
+    F = F_r e_r (x) e_r + F_t e_theta (x) e_theta,   F_r = dr/dR,  F_t = r/R
+
+Index convention used throughout the FEM: ``sigma_ij = C_ijkl du_k/dx_l`` and
+equilibrium ``d sigma_ij / dx_j + rho omega^2 u_i = 0`` (derivative on the 2nd
+and 4th index).  The BGM / Cosserat push-forward with gauge U(X) = u(x) is then
+``C'_ijkl = F_jJ F_lL C_iJkL / det F``,  ``rho' = rho / det F``
+(``materials.C_eff``). The paper's Eq. (5) writes the same law with the
+derivative on the 1st/3rd index; the two are transposes of each other.
 """
 
 from __future__ import annotations
@@ -14,21 +35,83 @@ import jax.numpy as jnp
 import numpy as np
 
 
+RADIAL_MAPS = ("linear", "quadratic")
+
+
+@dataclass(frozen=True)
+class RadialMap:
+    """Monotone radial map ``r = f(R)`` from ``[eps, b]`` onto ``[a, b]``.
+
+    All methods are JAX-traceable and accept arrays.
+    """
+
+    a: float
+    b: float
+    eps: float = 0.0
+    kind: str = "linear"
+
+    def __post_init__(self):
+        a, b, eps = self.a, self.b, self.eps
+        if self.kind not in RADIAL_MAPS:
+            raise ValueError(f"radial_map must be one of {RADIAL_MAPS}, got {self.kind!r}")
+        if not (0.0 <= eps < a < b):
+            raise ValueError(f"need 0 <= eps < a < b, got eps={eps}, a={a}, b={b}")
+        if self.kind == "quadratic" and not (b - eps > 2.0 * (a - eps)):
+            raise ValueError(
+                "quadratic map is non-monotone unless b - eps > 2 (a - eps); "
+                f"got a={a}, b={b}, eps={eps}")
+
+    # quadratic coefficients (Appendix Eq. 32)
+    @property
+    def _A(self) -> tuple[float, float, float]:
+        a, b, e = self.a, self.b, self.eps
+        d2 = (b - e) ** 2
+        A2 = (a - e) / d2
+        A1 = (d2 - 2.0 * b * (a - e)) / d2
+        A0 = b * b * (a - e) / d2
+        return A2, A1, A0
+
+    def r_of_R(self, R):
+        if self.kind == "linear":
+            s = (self.b - self.a) / (self.b - self.eps)
+            return self.a + s * (R - self.eps)
+        A2, A1, A0 = self._A
+        return A2 * R * R + A1 * R + A0
+
+    def R_of_r(self, r):
+        if self.kind == "linear":
+            s = (self.b - self.a) / (self.b - self.eps)
+            return self.eps + (r - self.a) / s
+        A2, A1, A0 = self._A
+        disc = jnp.maximum(A1 * A1 - 4.0 * A2 * (A0 - r), 0.0)
+        return (-A1 + jnp.sqrt(disc)) / (2.0 * A2)
+
+    def drdR(self, R):
+        if self.kind == "linear":
+            return (self.b - self.a) / (self.b - self.eps) + 0.0 * R
+        A2, A1, _ = self._A
+        return 2.0 * A2 * R + A1
+
+    def stretches(self, r):
+        """Return ``(R, F_r, F_t)`` at physical radius ``r`` (a <= r <= b)."""
+        R = self.R_of_r(r)
+        return R, self.drdR(R), r / R
+
+
 @dataclass
 class CircularCloakGeometry:
     """Circular annular cloak centred at (x_c, y_c).
 
     Parameters
     ----------
-    ri : Inner (void) radius.
-    rc : Outer (cloak boundary) radius.
-    x_c : Centre x in extended-mesh coordinates.
-    y_c : Centre y in extended-mesh coordinates.
-    y_top : Top-of-domain y (free surface). Required only when chaining
-            forced eval x-positions through the top edge; falls back to
-            ``y_c + 2 * rc + 1e-30`` (a dummy that triggers an error if
-            actually used) so existing callers that don't set it still
-            work for the legacy single-line top edge.
+    ri : Inner (cavity) radius ``a``.
+    rc : Outer (cloak/background interface) radius ``b``.
+    x_c, y_c : Centre coordinates.
+    y_top : Legacy carpet-cloak field (top-of-domain y), unused by the
+            fully embedded cloak.
+    eps : Regularisation radius of the virtual hole (``0 <= eps < ri``).
+          ``eps = 0`` reproduces the singular map used previously.
+    radial_map : ``"linear"`` or ``"quadratic"``.
     """
 
     ri: float
@@ -36,52 +119,89 @@ class CircularCloakGeometry:
     x_c: float
     y_c: float
     y_top: float | None = None
+    eps: float = 0.0
+    radial_map: str = "linear"
+
+    def __post_init__(self):
+        self.radial = RadialMap(a=self.ri, b=self.rc, eps=self.eps, kind=self.radial_map)
+
+    @property
+    def a(self) -> float:
+        return self.ri
+
+    @property
+    def b(self) -> float:
+        return self.rc
 
     # ── region membership (JAX-traceable) ─────────────────────────────
 
-    def in_cloak(self, x: jnp.ndarray) -> jnp.ndarray:
+    def _polar(self, x: jnp.ndarray):
         dx = x[0] - self.x_c
         dy = x[1] - self.y_c
         r = jnp.sqrt(dx**2 + dy**2)
+        return dx, dy, r
+
+    def in_cloak(self, x: jnp.ndarray) -> jnp.ndarray:
+        _, _, r = self._polar(x)
         return (r > self.ri) & (r < self.rc)
 
     def in_defect(self, x: jnp.ndarray) -> jnp.ndarray:
-        dx = x[0] - self.x_c
-        dy = x[1] - self.y_c
-        r = jnp.sqrt(dx**2 + dy**2)
+        _, _, r = self._polar(x)
         return r < self.ri
 
     # ── coordinate transformation ─────────────────────────────────────
 
-    def F_tensor(self, x: jnp.ndarray) -> jnp.ndarray:
-        """Deformation gradient for the circular blow-up (Cartesian frame).
+    def polar_frame(self, x: jnp.ndarray, clamp: bool = False):
+        """Return ``(r, R, F_r, F_t, Q)`` at *x*.
 
-        The blow-up maps reference coordinates X to physical coordinates x:
-            x = [rᵢ/‖X‖ + (rᶜ − rᵢ)/rᶜ] · X
-
-        In terms of the physical point, F = ∂x/∂X expressed as:
-            F_ij = (1/R) · (r · δ_ij − rᵢ · x̂_i · x̂_j)
-
-        where r = ‖x − centre‖, R = rᶜ(r − rᵢ)/(rᶜ − rᵢ) is the
-        original radius, and x̂ = (x − centre)/r.
+        ``Q = [e_r | e_theta]`` (columns) rotates polar components to
+        Cartesian ones. With ``clamp=True`` the physical radius is clamped to
+        ``[a, b]`` so that points that belong to the cloak *by mesh region*
+        but sit a hair outside the analytic annulus (isoparametric boundary
+        approximation) still receive the cloak material.
         """
-        ri, rc = self.ri, self.rc
-        dx = x[0] - self.x_c
-        dy = x[1] - self.y_c
-        r = jnp.sqrt(dx**2 + dy**2)
-        r_safe = jnp.maximum(r, 1e-30)  # avoid division by zero
+        dx, dy, r = self._polar(x)
+        r_safe = jnp.maximum(r, 1e-300)
+        e_r = jnp.array([dx, dy]) / r_safe
+        e_t = jnp.array([-e_r[1], e_r[0]])
+        Q = jnp.stack([e_r, e_t], axis=1)
+        r_eval = jnp.clip(r, self.ri, self.rc) if clamp else jnp.maximum(r, self.ri)
+        R, F_r, F_t = self.radial.stretches(r_eval)
+        return r, R, F_r, F_t, Q
 
-        # Original radius
-        R = rc * (r_safe - ri) / (rc - ri)
-        R_safe = jnp.maximum(R, 1e-30)
+    def F_cloak(self, x: jnp.ndarray, clamp: bool = True) -> jnp.ndarray:
+        """Cartesian deformation gradient of the cloak map (no region test)."""
+        _, _, F_r, F_t, Q = self.polar_frame(x, clamp=clamp)
+        e_r, e_t = Q[:, 0], Q[:, 1]
+        return F_r * jnp.outer(e_r, e_r) + F_t * jnp.outer(e_t, e_t)
 
-        # Unit direction vector
-        x_hat = jnp.array([dx, dy]) / r_safe
+    def F_tensor(self, x: jnp.ndarray) -> jnp.ndarray:
+        """Deformation gradient ``F = dx/dX`` in the Cartesian frame.
 
-        I2 = jnp.eye(2)
-        F_cloak = (1.0 / R_safe) * (r_safe * I2 - ri * jnp.outer(x_hat, x_hat))
+        Equal to the identity outside the open annulus ``a < r < b``.
+        For ``eps = 0`` and the linear map this is identical to the previous
+        implementation ``F = (r I - a x̂ x̂) / R``.
+        """
+        F = self.F_cloak(x, clamp=False)
+        return jnp.where(self.in_cloak(x), F, jnp.eye(2))
 
-        return jnp.where(self.in_cloak(x), F_cloak, I2)
+    def virtual_point(self, x: jnp.ndarray) -> jnp.ndarray:
+        """Inverse map ``X = Xi^{-1}(x)`` (identity outside the cloak)."""
+        dx, dy, r = self._polar(x)
+        r_c = jnp.clip(r, self.ri, self.rc)
+        R = self.radial.R_of_r(r_c)
+        scale = jnp.where(self.in_cloak(x), R / jnp.maximum(r, 1e-300), 1.0)
+        return jnp.array([self.x_c + scale * dx, self.y_c + scale * dy])
+
+    def physical_point(self, X: jnp.ndarray) -> jnp.ndarray:
+        """Forward map ``x = Xi(X)`` for ``eps <= |X - c| <= b`` (identity beyond b)."""
+        dX = X[0] - self.x_c
+        dY = X[1] - self.y_c
+        R = jnp.sqrt(dX**2 + dY**2)
+        inside = (R >= self.eps) & (R < self.rc)
+        r = self.radial.r_of_R(jnp.clip(R, self.eps, self.rc))
+        scale = jnp.where(inside, r / jnp.maximum(R, 1e-300), 1.0)
+        return jnp.array([self.x_c + scale * dX, self.y_c + scale * dY])
 
     # ── bounding box for CellDecomposition ────────────────────────────
 

@@ -326,6 +326,57 @@ def symmetrize_stiffness(Ceff: jnp.ndarray) -> jnp.ndarray:
     return voigt4_to_C(Msym)
 
 
+# ── transformation (BGM / Cosserat) push-forward ─────────────────────
+
+
+def C_pushforward(F: jnp.ndarray, C0: jnp.ndarray) -> jnp.ndarray:
+    """BGM push-forward with gauge U(X) = u(x) (no minor symmetry imposed).
+
+    Convention: ``sigma_ij = C_ijkl du_k/dx_l`` (gradient on indices 2, 4), so
+    ``C'_ijkl = F_jJ F_lL C_iJkL / det F``. Major symmetry C'_ijkl = C'_klij is
+    preserved; minor symmetries are not.
+    """
+    J = jnp.linalg.det(F)
+    return jnp.einsum("jJ,lL,iJkL->ijkl", F, F, C0) / J
+
+
+def C_radial_polar(lam: float, mu: float, F_r, F_t) -> jnp.ndarray:
+    """Closed-form push-forward of an isotropic C for a radial map, in the
+    local orthonormal polar basis (index 0 = r, 1 = theta).
+
+    With ``F = diag(F_r, F_t)`` in that basis and the FEM convention above:
+
+        C_rrrr = (F_r/F_t)(lam + 2 mu)     C_tttt = (F_t/F_r)(lam + 2 mu)
+        C_rrtt = C_ttrr = lam
+        C_rtrt = (F_t/F_r) mu              C_trtr = (F_r/F_t) mu
+        C_rttr = C_trrt = mu
+
+    (Chatzopoulos et al. 2023 Eq. 21 lists the same tensor in the transposed,
+    gradient-first convention, i.e. with C_rtrt and C_trtr swapped.)
+    """
+    g = F_r / F_t
+    C = jnp.zeros((2, 2, 2, 2))
+    C = C.at[0, 0, 0, 0].set(g * (lam + 2 * mu))
+    C = C.at[1, 1, 1, 1].set((lam + 2 * mu) / g)
+    C = C.at[0, 0, 1, 1].set(lam)
+    C = C.at[1, 1, 0, 0].set(lam)
+    C = C.at[0, 1, 0, 1].set(mu / g)
+    C = C.at[1, 0, 1, 0].set(mu * g)
+    C = C.at[0, 1, 1, 0].set(mu)
+    C = C.at[1, 0, 0, 1].set(mu)
+    return C
+
+
+def rotate_C(C: jnp.ndarray, Q: jnp.ndarray) -> jnp.ndarray:
+    """Full fourth-order rotation ``C'_ijkl = Q_ia Q_jb Q_kc Q_ld C_abcd``.
+
+    For polar -> Cartesian, ``Q = [e_r | e_theta]``: its columns are the polar
+    unit vectors written in Cartesian components, so
+    ``C_cart = rotate_C(C_polar, Q)``.
+    """
+    return jnp.einsum("ia,jb,kc,ld,abcd->ijkl", Q, Q, Q, Q, C)
+
+
 # ── position-dependent effective properties ──────────────────────────
 
 
@@ -337,8 +388,7 @@ def C_eff(
 ) -> jnp.ndarray:
     """Effective stiffness tensor at position *x*."""
     F = geometry.F_tensor(x)
-    J = jnp.linalg.det(F)
-    Cnew = jnp.einsum("jJ,lL,iJkL->ijkl", F, F, C0) / J
+    Cnew = C_pushforward(F, C0)
     if symmetrize:
         Cnew = symmetrize_stiffness(Cnew)
     return jnp.where(geometry.in_cloak(x), Cnew, C0)

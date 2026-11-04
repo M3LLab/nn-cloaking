@@ -1,0 +1,86 @@
+# Step 1 — fully embedded circular cloak, continuous regularised ideal BGM cloak.
+#
+# Background: paper (Chatzopoulos et al. 2023) soil, lam = mu = 144 MPa,
+# rho = 1600 kg/m^3  ->  cs = 300 m/s, cp = 519.6 m/s.
+# f = 200 Hz         ->  lambda_S = 1.5 m = b, lambda_P = 2.60 m.
+#
+# Reproduce everything:
+#   .venv/bin/python scripts/circular_step1.py --config configs/circular_embedded/step1.yaml --study all
+# Single study:  --study base | eps | mesh | absorbing | map
+
+material:
+  lam: 144.0e+6
+  mu: 144.0e+6
+  rho: 1600.0
+
+cloak:
+  xc: 0.0
+  yc: 0.0
+  a: 0.5            # traction-free cavity radius
+  b: 1.5            # bonded cloak/background interface (b = 3a)
+  eps: 0.005        # regularisation: virtual hole radius (eps/a = 0.01)
+  radial_map: linear
+
+source:              # below-left of the cloak, outside r = b and the absorbing layer
+  x: -3.0
+  y: -3.0
+  direction: [0.0, 1.0]   # vertical polarisation
+  amplitude: 1000.0       # total force per unit thickness F0 [N/m]
+  sigma: 0.075            # Gaussian width [m] (lambda_S / 20)
+  frequency_hz: 200.0
+
+domain:              # physical box (absorbing layer added outside it on all four sides)
+  x_min: -5.0
+  x_max: 5.0
+  y_min: -5.0
+  y_max: 5.0
+
+absorbing:          # gentle cubic ramp: case A vs analytic Green tensor = 7.5e-4
+  thickness: 6.0     # ~2.3 lambda_P
+  xi_max: 1.5
+  power: 3
+
+mesh:
+  ele_type: TRI6
+  gauss_order: 4           # 6-point rule
+  elems_per_wavelength: 12 # background h = lambda_S / 12 (A vs analytic 9.5e-4)
+  cloak_refine: 2.0        # annulus h = h_bg / 2
+  inner_bl_factor: 2.0     # h at r = a = 2 * eps * dr/dR(eps)
+  inner_h_max: 0.02
+  inner_h_min: 1.0e-4
+  inner_grading: 0.3
+  source_h: 0.5            # h at the source = 0.5 sigma
+  scale: 1.0
+  hole_h_factor: 0.5       # case D: h at the eps-hole = 0.5 eps
+
+metrics:
+  grid_spacing: 0.05
+  exterior_margin: 0.02    # sample r > 1.02 b
+  source_exclusion: 0.75   # drop |x - xs| < lambda_S / 2
+  box_margin: 0.0
+  ring_radii_over_b: [1.25, 2.0]
+  ring_points: 720
+
+output_dir: output/circular_step1
+
+studies:
+  eps:
+    key: cloak.eps
+    values: [0.1, 0.05, 0.025, 0.01, 0.005, 0.0025]
+    cases: [A, B, C, D]
+  mesh:
+    key: mesh.scale
+    values: [2.0, 1.4, 1.0, 0.75, 0.6]   # 0.6 = 20 el/lambda_S, ~14 GiB; finer levels -> big server
+    cases: [A, B, C, D]
+  absorbing:
+    variants:
+      - {absorbing.thickness: 4.0, absorbing.xi_max: 4.0, absorbing.power: 2}   # original setting
+      - {absorbing.thickness: 4.0}
+      - {absorbing.thickness: 8.0}
+      - {absorbing.xi_max: 0.75}
+      - {absorbing.xi_max: 3.0}
+    cases: [A, B, C]
+  map:
+    variants:
+      - {cloak.radial_map: quadratic}
+    cases: [A, B, C, D]

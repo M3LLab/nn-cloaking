@@ -7,4 +7,4 @@ jax-fem
 *.aux
 *.out
 *.toc
-*.gz
+*.gz.venv
