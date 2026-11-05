@@ -1,62 +1,53 @@
-# Step 1 — continuous regularised ideal cloak: results
+# Step 1: comparison of force directions
 
-Normalised complex-displacement L2 error on the common exterior sampling grid (spacing 0.05 m, r > 1.02 b, |x − x_s| > 0.75 m, physical box only).  `X_vs_ref` = ‖u_X − u_A‖ / ‖u_A‖.
+Exterior normalised L2 error of the total displacement magnitude ‖u‖ on the common sampling grid (`mag_`); the last rows give the complex-displacement error for reference. Each direction is a separate solve.
 
 ## Base case
 
-| metric | value |
+| metric | vertical | horizontal | both |
+|---|---|---|---|
+| mag_B_vs_ref | 1.581e-01 | 1.581e-01 | 1.044e-01 |
+| mag_C_vs_ref | 6.681e-05 | 6.665e-05 | 3.356e-05 |
+| mag_D_vs_ref | 7.667e-05 | 7.668e-05 | 3.766e-05 |
+| mag_C_vs_D | 1.183e-05 | 1.191e-05 | 5.124e-06 |
+| mag_interior | 4.648e-05 | 4.629e-05 | 2.078e-05 |
+| mag_A_vs_analytic | 5.000e-05 | 5.061e-05 | 5.083e-05 |
+| ring1.25b_mag_C_vs_ref | 1.012e-04 | 1.007e-04 | 6.176e-05 |
+| ring2b_mag_C_vs_ref | 7.677e-05 | 7.664e-05 | 4.224e-05 |
+| B_vs_ref | 3.116e-01 | 3.116e-01 | 2.217e-01 |
+| C_vs_ref | 1.301e-04 | 1.300e-04 | 7.608e-05 |
+| C_vs_D | 2.610e-05 | 2.603e-05 | 1.178e-05 |
+| A_vs_analytic | 2.489e-04 | 2.456e-04 | 2.378e-04 |
+
+## C vs A against eps (‖u‖ error)
+
+| eps | vertical | horizontal | both |
+|---|---|---|---|
+| 1.000e-01 | 3.118e-02 | 3.118e-02 | 1.538e-02 |
+| 5.000e-02 | 7.872e-03 | 7.872e-03 | 3.859e-03 |
+| 2.500e-02 | 1.884e-03 | 1.884e-03 | 9.321e-04 |
+| 1.000e-02 | 2.826e-04 | 2.823e-04 | 1.413e-04 |
+| 5.000e-03 | 6.681e-05 | 6.665e-05 | 3.356e-05 |
+| 2.500e-03 | 1.619e-05 | 1.628e-05 | 8.024e-06 |
+
+## Mirror check
+
+The problem is symmetric about y = x, so in the continuum the horizontal field is the vertical field reflected (x <-> y, u_x <-> u_y). The directions are therefore not independent tests at this source position; the numbers below measure the mesh's asymmetry. Complex-displacement error, since this compares the fields themselves.
+
+| case | horizontal vs mirrored vertical |
 |---|---|
-| eps | 5.000e-03 |
-| B_vs_ref | 3.116e-01 |
-| C_vs_ref | 1.330e-04 |
-| D_vs_ref | 1.509e-04 |
-| C_vs_D | 3.759e-05 |
-| A_vs_analytic | 9.475e-04 |
-| interior | 1.653e-04 |
-| ring1.25b_B_vs_ref | 4.406e-01 |
-| ring1.25b_C_vs_ref | 1.890e-04 |
-| ring1.25b_D_vs_ref | 2.136e-04 |
-| ring2b_B_vs_ref | 3.280e-01 |
-| ring2b_C_vs_ref | 1.408e-04 |
-| ring2b_D_vs_ref | 1.590e-04 |
-| n_cells_A | 88470 |
-| n_dofs_A | 710580 |
-| h_bg | 1.250e-01 |
-| h_inner | 6.689e-03 |
-| peak_rss_gib | 6.649e+00 |
+| A | 2.643e-04 |
+| B | 2.635e-04 |
+| C | 2.642e-04 |
+| D | 2.644e-04 |
 
-## eps study
+## Superposition check
 
-| eps | B_vs_ref | C_vs_ref | D_vs_ref | C_vs_D | interior | h_inner | n_cells_A |
-|---|---|---|---|---|---|---|---|
-| 1.000e-01 | 3.116e-01 | 6.265e-02 | 6.229e-02 | 3.859e-04 | 9.947e-04 | 2.000e-02 | 80564 |
-| 5.000e-02 | 3.116e-01 | 1.565e-02 | 1.564e-02 | 2.023e-05 | 1.794e-04 | 2.000e-02 | 80564 |
-| 2.500e-02 | 3.116e-01 | 3.728e-03 | 3.825e-03 | 1.122e-04 | 3.989e-04 | 2.000e-02 | 80564 |
-| 1.000e-02 | 3.116e-01 | 5.457e-04 | 6.053e-04 | 7.580e-05 | 2.985e-04 | 1.342e-02 | 82490 |
-| 5.000e-03 | 3.116e-01 | 1.330e-04 | 1.509e-04 | 3.759e-05 | 1.653e-04 | 6.689e-03 | 88470 |
-| 2.500e-03 | 3.116e-01 | 4.012e-05 | 3.763e-05 | 3.223e-05 | 1.460e-04 | 3.339e-03 | 100390 |
+The problem is linear, so the `both` solve should equal (u_V + u_H) / sqrt(2). Complex-displacement error: magnitudes do not superpose.
 
-## mesh study
-
-| scale | h_bg | n_cells_A | n_dofs_A | A_vs_analytic | B_vs_ref | C_vs_ref | D_vs_ref | C_vs_D | A_vs_finest | C_vs_finest | peak_rss_gib |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| 2.000e+00 | 2.500e-01 | 23128 | 186436 | 6.923e-03 | 3.116e-01 | 4.121e-04 | 1.480e-04 | 4.048e-04 | 6.782e-03 | 6.910e-03 | 2.294e+00 |
-| 1.400e+00 | 1.750e-01 | 46016 | 370148 | 2.170e-03 | 3.117e-01 | 1.494e-04 | 1.488e-04 | 1.052e-04 | 1.962e-03 | 1.994e-03 | 3.831e+00 |
-| 1.000e+00 | 1.250e-01 | 88470 | 710580 | 9.475e-04 | 3.116e-01 | 1.330e-04 | 1.509e-04 | 3.759e-05 | 5.800e-04 | 5.854e-04 | 6.833e+00 |
-| 7.500e-01 | 9.375e-02 | 154820 | 1242324 | 7.428e-04 | 3.116e-01 | 1.365e-04 | 1.516e-04 | 2.019e-05 | 0.000e+00 | 0.000e+00 | 1.138e+01 |
-
-## absorbing study
-
-| variant | A_vs_analytic | A_vs_baseA | B_vs_ref | C_vs_ref | n_cells_A |
-|---|---|---|---|---|---|
-| {"absorbing.thickness": 4.0, "absorbing.xi_max": 4.0, "absorbing.power": 2} | 3.527e-02 | 3.519e-02 | 3.096e-01 | 1.321e-04 | 64386 |
-| {"absorbing.thickness": 4.0} | 3.630e-03 | 3.037e-03 | 3.113e-01 | 1.329e-04 | 64386 |
-| {"absorbing.thickness": 8.0} | 7.068e-04 | 4.246e-04 | 3.116e-01 | 1.330e-04 | 116578 |
-| {"absorbing.xi_max": 0.75} | 2.399e-03 | 2.327e-03 | 3.120e-01 | 1.331e-04 | 88470 |
-| {"absorbing.xi_max": 3.0} | 1.725e-03 | 9.571e-04 | 3.117e-01 | 1.330e-04 | 88470 |
-
-## map study
-
-| variant | C_vs_ref | D_vs_ref | C_vs_D | interior |
-|---|---|---|---|---|
-| {"cloak.radial_map": "quadratic"} | 1.225e-04 | 1.509e-04 | 3.932e-05 | 1.423e-04 |
+| case | both vs (u_V + u_H) / sqrt(2) |
+|---|---|
+| A | 1.483e-14 |
+| B | 1.517e-14 |
+| C | 9.028e-14 |
+| D | 1.399e-14 |

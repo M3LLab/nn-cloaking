@@ -143,3 +143,19 @@ def rel_l2(u: np.ndarray, u_ref: np.ndarray) -> float:
     num = np.sum(np.abs(u[ok] - u_ref[ok]) ** 2)
     den = np.sum(np.abs(u_ref[ok]) ** 2)
     return float(np.sqrt(num / den))
+
+
+def magnitude(u: np.ndarray) -> np.ndarray:
+    """Total displacement magnitude sqrt(|u_x|^2 + |u_y|^2) along the last axis."""
+    return np.sqrt(np.sum(np.abs(u) ** 2, axis=-1))
+
+
+def rel_l2_mag(u: np.ndarray, u_ref: np.ndarray) -> float:
+    """Normalised L2 error of the total displacement magnitude.
+
+    Blind to phase and to the direction of u: two different fields with equal
+    magnitude score zero. ``rel_l2`` is the complex counterpart.
+    """
+    a, b = magnitude(np.asarray(u)), magnitude(np.asarray(u_ref))
+    ok = np.isfinite(a) & np.isfinite(b)
+    return float(np.sqrt(np.sum((a[ok] - b[ok]) ** 2) / np.sum(b[ok] ** 2)))

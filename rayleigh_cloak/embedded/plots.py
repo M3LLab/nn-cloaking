@@ -18,7 +18,7 @@ from rayleigh_cloak.embedded.config import EmbeddedCloakConfig
 from rayleigh_cloak.embedded.mesh import (
     REGION_ABSORB, REGION_ANNULUS, REGION_BOX, REGION_DISK, TaggedMesh,
 )
-from rayleigh_cloak.embedded.problem import make_geometry, xi_profile
+from rayleigh_cloak.embedded.problem import layer_loss_profile, make_geometry
 from rayleigh_cloak.embedded.sampling import PointEvaluator, exterior_grid
 from rayleigh_cloak.materials import C_eff, C_iso, C_radial_polar
 
@@ -67,10 +67,10 @@ def plot_setup(cfg: EmbeddedCloakConfig, path: str):
     xs = np.linspace(X0, X1, 400)
     ys = np.linspace(Y0, Y1, 400)
     XX, YY = np.meshgrid(xs, ys)
-    xi = np.asarray(jax.vmap(xi_profile(cfg))(jnp.stack([XX.ravel(), YY.ravel()], 1))).reshape(XX.shape)
+    xi = np.asarray(jax.vmap(layer_loss_profile(cfg))(jnp.stack([XX.ravel(), YY.ravel()], 1))).reshape(XX.shape)
     im = ax.imshow(xi, extent=(X0, X1, Y0, Y1), origin="lower", cmap="Greys", vmin=0,
-                   vmax=max(cfg.absorbing.xi_max, 1e-9) * 1.3)
-    fig.colorbar(im, ax=ax, shrink=0.75, label=r"absorbing-layer loss $\xi(\mathbf{x})$")
+                   vmax=max(float(xi.max()), 1e-9) * 1.3)
+    fig.colorbar(im, ax=ax, shrink=0.75, label=r"PML $(\sigma_x+\sigma_y)/\omega$" if cfg.absorbing.kind == "pml" else r"damping $\xi$")
     ax.add_patch(Rectangle((d.x_min, d.y_min), d.x_max - d.x_min, d.y_max - d.y_min,
                            fill=False, ec="tab:blue", lw=1.2, label="physical box"))
     ax.add_patch(Rectangle((X0, Y0), X1 - X0, Y1 - Y0, fill=False, ec="tab:red", lw=3,
@@ -80,9 +80,9 @@ def plot_setup(cfg: EmbeddedCloakConfig, path: str):
     ax.add_patch(Circle((c.xc, c.yc), c.a, fc="white", ec="k", lw=1.0,
                         label=f"traction-free cavity r<a (a={c.a} m)"))
     _source(ax, cfg, 90)
-    ax.scatter([], [], marker="*", c="gold", ec="k", label="Gaussian force (vertical)")
+    ax.scatter([], [], marker="*", c="gold", ec="k", label=f"Gaussian force, direction {tuple(s.direction)}")
     ax.set_xlim(X0, X1); ax.set_ylim(Y0, Y1); ax.set_aspect("equal")
-    ax.set_title(f"Computational domain: absorbing layer L={cfg.absorbing.thickness} m on all sides\n"
+    ax.set_title(f"Computational domain: {cfg.absorbing.kind} layer L={cfg.absorbing.thickness} m on all sides\n"
                  f"f={s.frequency_hz:g} Hz, $\\lambda_S$={cfg.lambda_s:.2f} m, "
                  f"$\\lambda_P$={cfg.lambda_p:.2f} m", fontsize=10)
     ax.legend(loc="upper right", fontsize=7, framealpha=0.9)
@@ -221,7 +221,7 @@ LABELS = {"A": "A: homogeneous (no hole)", "B": "B: traction-free hole, no cloak
           "C": "C: hole + regularised ideal cloak", "D": "D: virtual problem (hole r<ε)"}
 
 
-def plot_fields(cfg, res, path, cases=("A", "B", "C")):
+def plot_fields_components(cfg, res, path, cases=("A", "B", "C")):
     ext, imgs, XX, YY = field_images(cfg, {k: res[k] for k in cases})
     A = imgs["A"]
     comps = [("Re $u_x$", lambda u: u[..., 0].real, "RdBu_r"),
@@ -244,7 +244,7 @@ def plot_fields(cfg, res, path, cases=("A", "B", "C")):
     _save(fig, path)
 
 
-def plot_scattered(cfg, res, path):
+def plot_scattered_components(cfg, res, path):
     ext, imgs, XX, YY = field_images(cfg, {k: res[k] for k in ("A", "B", "C")})
     A = imgs["A"]
     sB, sC = imgs["B"] - A, imgs["C"] - A
@@ -277,6 +277,47 @@ def plot_scattered(cfg, res, path):
     _save(fig, path)
 
 
+def _mag(u):
+    return np.sqrt(np.abs(u[..., 0]) ** 2 + np.abs(u[..., 1]) ** 2)
+
+
+def plot_fields(cfg, res, path, cases=("A", "B", "C")):
+    """Total displacement magnitude for each case, on one colour scale."""
+    ext, imgs, XX, YY = field_images(cfg, {k: res[k] for k in cases})
+    lim = _lims(_mag(imgs["A"]), XX, YY, cfg)
+    fig, axes = plt.subplots(1, len(cases), figsize=(5.4 * len(cases), 5))
+    for ax, k in zip(axes, cases):
+        im = ax.imshow(_mag(imgs[k]), extent=ext, origin="lower", cmap="inferno", vmin=0, vmax=lim)
+        _circles(ax, cfg, color="w"); _source(ax, cfg)
+        ax.set_title(LABELS[k], fontsize=10); ax.set_aspect("equal")
+        fig.colorbar(im, ax=ax, shrink=0.8, label="‖u‖ [m]")
+    fig.suptitle("Total displacement magnitude ‖u‖ = sqrt(|u_x|² + |u_y|²), common colour scale "
+                 "(99th pct. of A outside the source neighbourhood)", fontsize=11)
+    _save(fig, path)
+
+
+def plot_scattered(cfg, res, path):
+    """Magnitude difference ‖u_X‖ − ‖u_A‖ outside the cloak (C masked for r < b)."""
+    ext, imgs, XX, YY = field_images(cfg, {k: res[k] for k in ("A", "B", "C")})
+    mA = _mag(imgs["A"])
+    dB, dC = _mag(imgs["B"]) - mA, _mag(imgs["C"]) - mA
+    rr = np.hypot(XX - cfg.cloak.xc, YY - cfg.cloak.yc)
+    dC = np.where(rr < cfg.cloak.b, np.nan, dC)
+    lim = _lims(dB, XX, YY, cfg)
+    limC = _lims(dC, XX, YY, cfg)
+    panels = [("‖u_B‖ − ‖u_A‖", dB, lim), ("‖u_C‖ − ‖u_A‖, r > b (same scale)", dC, lim),
+              (f"‖u_C‖ − ‖u_A‖, r > b (own scale, ×{lim / limC:.0f})", dC, limC)]
+    fig, axes = plt.subplots(1, 3, figsize=(16.2, 5))
+    for ax, (name, d, l) in zip(axes, panels):
+        im = ax.imshow(d, extent=ext, origin="lower", cmap="RdBu_r", vmin=-l, vmax=l)
+        _circles(ax, cfg); _source(ax, cfg)
+        ax.set_title(name, fontsize=10); ax.set_aspect("equal")
+        fig.colorbar(im, ax=ax, shrink=0.8, label="m")
+    fig.suptitle("Change in total displacement magnitude relative to the homogeneous reference A",
+                 fontsize=11)
+    _save(fig, path)
+
+
 def plot_lines(cfg, res, path):
     c, s = cfg.cloak, cfg.source
     fig, axes = plt.subplots(1, 3, figsize=(18, 4.8))
@@ -298,7 +339,7 @@ def plot_lines(cfg, res, path):
     P, sline = P[inbox], sline[inbox]
     for k, sty in [("A", "k-"), ("B", "r-"), ("C", "b--")]:
         u = res[k].evaluator(P)(res[k].u)
-        ax.plot(sline, u[:, 1].real, sty, lw=1.0, label=f"{k} Re $u_y$")
+        ax.plot(sline, np.sqrt((np.abs(u) ** 2).sum(1)), sty, lw=1.0, label=f"{k} ‖u‖")
     for x in (-c.b, -c.a, c.a, c.b):
         ax.axvline(x, color="gray", lw=0.5)
     ax.set_xlabel("signed distance from cloak centre along source→centre line [m]")
@@ -313,17 +354,17 @@ def plot_lines(cfg, res, path):
 def plot_eps_study(rows, b_level, a, path):
     eps = np.array([r["eps"] for r in rows]) / a
     fig, ax = plt.subplots(figsize=(7, 5))
-    for key, lab, sty in [("C_vs_ref", "C vs A (cloak error)", "bo-"),
-                          ("D_vs_ref", "D vs A (intrinsic ε error)", "gs--"),
-                          ("C_vs_D", "C vs D (implementation/discretisation)", "r^-"),
-                          ("interior", "interior: u_C(x) vs u_D(Ξ⁻¹x)", "mv:")]:
+    for key, lab, sty in [("mag_C_vs_ref", "C vs A (cloak error)", "bo-"),
+                          ("mag_D_vs_ref", "D vs A (intrinsic ε error)", "gs--"),
+                          ("mag_C_vs_D", "C vs D (implementation/discretisation)", "r^-"),
+                          ("mag_interior", "interior: u_C(x) vs u_D(Ξ⁻¹x)", "mv:")]:
         y = np.array([r.get(key, np.nan) for r in rows])
         ax.loglog(eps, y, sty, label=lab)
     ref = rows[len(rows) // 2]
     e0 = ref["eps"] / a
-    ax.loglog(eps, ref["D_vs_ref"] * (eps / e0) ** 2, "k:", lw=0.8, label="∝ ε²")
+    ax.loglog(eps, ref["mag_D_vs_ref"] * (eps / e0) ** 2, "k:", lw=0.8, label="∝ ε²")
     ax.axhline(b_level, color="r", lw=0.8, ls="-.", label=f"B (no cloak) = {b_level:.3f}")
-    ax.set_xlabel("ε / a"); ax.set_ylabel("normalised complex L2 error (exterior)")
+    ax.set_xlabel("ε / a"); ax.set_ylabel("normalised L2 error of ‖u‖ (exterior)")
     ax.legend(fontsize=8); ax.grid(True, which="both", alpha=0.3)
     ax.set_title("Regularisation convergence")
     _save(fig, path)
@@ -332,17 +373,17 @@ def plot_eps_study(rows, b_level, a, path):
 def plot_mesh_study(rows, path):
     h = np.array([r["h_bg"] for r in rows])
     fig, ax = plt.subplots(figsize=(7, 5))
-    for key, lab, sty in [("C_vs_ref", "C vs A (same mesh)", "bo-"),
-                          ("D_vs_ref", "D vs A (same exterior mesh size)", "gs--"),
-                          ("C_vs_D", "C vs D", "r^-"),
-                          ("A_vs_analytic", "A vs analytic Green tensor", "k*-"),
+    for key, lab, sty in [("mag_C_vs_ref", "C vs A (same mesh)", "bo-"),
+                          ("mag_D_vs_ref", "D vs A (same exterior mesh size)", "gs--"),
+                          ("mag_C_vs_D", "C vs D", "r^-"),
+                          ("mag_A_vs_analytic", "A vs analytic Green tensor", "k*-"),
                           ("A_vs_finest", "A vs finest-mesh A", "c.-"),
                           ("C_vs_finest", "C vs finest-mesh C", "m.-")]:
         y = np.array([r.get(key, np.nan) for r in rows], dtype=float)
         y[y <= 0] = np.nan          # the finest level vs itself is exactly 0
         if np.isfinite(y).any():
             ax.loglog(h, y, sty, label=lab)
-    ax.set_xlabel("background element size h_bg [m]"); ax.set_ylabel("normalised complex L2")
+    ax.set_xlabel("background element size h_bg [m]"); ax.set_ylabel("normalised L2 error of ‖u‖")
     ax.legend(fontsize=8); ax.grid(True, which="both", alpha=0.3)
     ax.set_title("Mesh sensitivity (TRI6)")
     _save(fig, path)

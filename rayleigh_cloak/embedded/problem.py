@@ -2,13 +2,14 @@
 
 Strong form (time factor exp(+i omega t), consistent with the damping sign):
 
-    d/dx_j [ (1 + i xi) C_ijkl du_k/dx_l ] + omega^2 (1 - i xi) rho u_i + f_i = 0
+    d/dx_j [ C^c_ijkl du_k/dx_l ] + omega^2 rho^c u_i + f_i = 0
 
-* ``C``, ``rho`` are evaluated at every quadrature point: background (C0, rho0)
-  everywhere except, in case C, the annulus elements, which receive the full
-  BGM push-forward ``C' = F F C0 / J`` (no minor symmetry imposed) and
-  ``rho' = rho0 / J``.
-* ``xi`` is the absorbing-layer profile (zero in the physical box).
+* ``C^c``, ``rho^c`` are complex and evaluated at every quadrature point:
+  background (C0, rho0) in the physical box, except that in case C the annulus
+  elements receive the full BGM push-forward ``C' = F F C0 / J`` (no minor
+  symmetry imposed) and ``rho' = rho0 / J``.
+* Outside the box they carry the absorbing layer (``AbsorbingCfg``): by default
+  a PML, ``C^c_ijkl = C_ijkl s_x s_y / (s_j s_l)``, ``rho^c = rho s_x s_y``.
 * ``f`` is a Gaussian body force whose integral -- computed with the same
   quadrature as the solve -- equals ``F0 * direction`` exactly.
 
@@ -45,16 +46,51 @@ def make_geometry(cfg: EmbeddedCloakConfig) -> CircularCloakGeometry:
                                  eps=c.eps, radial_map=c.radial_map)
 
 
-def xi_profile(cfg: EmbeddedCloakConfig):
-    d, ab = cfg.domain, cfg.absorbing
-    L, xm, p = ab.thickness, ab.xi_max, ab.power
+def pml_sigma_max(cfg: EmbeddedCloakConfig) -> float:
+    ab = cfg.absorbing
+    return (ab.power + 1) * cfg.material.cp * np.log(1.0 / ab.reflection) / (2.0 * ab.thickness)
 
-    def xi(x):
-        dx = jnp.maximum(jnp.maximum(d.x_min - x[0], x[0] - d.x_max), 0.0)
-        dy = jnp.maximum(jnp.maximum(d.y_min - x[1], x[1] - d.y_max), 0.0)
-        return xm * ((dx / L) ** p + (dy / L) ** p)
 
-    return xi
+def _layer_depths(cfg: EmbeddedCloakConfig, x):
+    d = cfg.domain
+    dx = jnp.maximum(jnp.maximum(d.x_min - x[0], x[0] - d.x_max), 0.0)
+    dy = jnp.maximum(jnp.maximum(d.y_min - x[1], x[1] - d.y_max), 0.0)
+    return dx, dy
+
+
+def layer_loss_profile(cfg: EmbeddedCloakConfig):
+    """Scalar loss map for plots: (sigma_x + sigma_y)/omega (pml) or xi (damping)."""
+    ab = cfg.absorbing
+    amp = pml_sigma_max(cfg) / cfg.omega if ab.kind == "pml" else ab.xi_max
+
+    def loss(x):
+        dx, dy = _layer_depths(cfg, x)
+        return amp * ((dx / ab.thickness) ** ab.power + (dy / ab.thickness) ** ab.power)
+
+    return loss
+
+
+def layer_coefficients(cfg: EmbeddedCloakConfig):
+    """Return ``fn(x, C, rho) -> (C^c, rho^c)`` applying the absorbing layer."""
+    ab = cfg.absorbing
+    L, p = ab.thickness, ab.power
+    if ab.kind == "damping":
+        def damp(x, C, rho):
+            dx, dy = _layer_depths(cfg, x)
+            xi = ab.xi_max * ((dx / L) ** p + (dy / L) ** p)
+            return (1.0 + 1j * xi) * C, (1.0 - 1j * xi) * rho
+        return damp
+
+    amp = pml_sigma_max(cfg) / cfg.omega
+
+    def pml(x, C, rho):
+        dx, dy = _layer_depths(cfg, x)
+        s = jnp.stack([1.0 - 1j * amp * (dx / L) ** p, 1.0 - 1j * amp * (dy / L) ** p])
+        J = s[0] * s[1]
+        # the derivative sits on indices j and l of C_ijkl
+        scale = J / (s[None, :, None, None] * s[None, None, None, :])
+        return C * scale, rho * J
+    return pml
 
 
 class EmbeddedCloakProblem(Problem):
@@ -81,7 +117,8 @@ class EmbeddedCloakProblem(Problem):
             self.cloak_stats = dict(J_min=float(Jc.min()), J_max=float(Jc.max()),
                                     C_max_over_mu=float(jnp.abs(Cc).max() / mat.mu))
 
-        xi_qp = jax.vmap(jax.vmap(xi_profile(cfg)))(qp)
+        layer = layer_coefficients(cfg)
+        Cc_qp, rhoc_qp = jax.vmap(jax.vmap(layer))(qp, C_qp, rho_qp)
 
         # Gaussian body force, normalised with the solve's own quadrature
         g = jnp.exp(-0.5 * ((qp[..., 0] - src.x) ** 2 + (qp[..., 1] - src.y) ** 2)
@@ -97,23 +134,23 @@ class EmbeddedCloakProblem(Problem):
             ratio=g_int / float(2 * np.pi * src.sigma ** 2),
             total_force=[float(jnp.sum(f_qp[..., k] * JxW)) for k in range(2)],
         )
-        self.internal_vars = [C_qp, rho_qp, xi_qp, f_qp]
+        self.internal_vars = [Cc_qp.real, Cc_qp.imag, rhoc_qp.real, rhoc_qp.imag, f_qp]
 
     def get_tensor_map(self):
-        def stress(u_grad, C, _rho, xi, _f):
+        def stress(u_grad, CR, CI, _rR, _rI, _f):
             gR, gI = u_grad[:2, :], u_grad[2:, :]
-            sR = jnp.einsum("ijkl,kl->ij", C, gR)
-            sI = jnp.einsum("ijkl,kl->ij", C, gI)
-            return jnp.concatenate([sR - xi * sI, sI + xi * sR], axis=0)
+            sR = jnp.einsum("ijkl,kl->ij", CR, gR) - jnp.einsum("ijkl,kl->ij", CI, gI)
+            sI = jnp.einsum("ijkl,kl->ij", CR, gI) + jnp.einsum("ijkl,kl->ij", CI, gR)
+            return jnp.concatenate([sR, sI], axis=0)
         return stress
 
     def get_mass_map(self):
         omega = self._omega
 
-        def inertia(u, _x, _C, rho, xi, f):
+        def inertia(u, _x, _CR, _CI, rR, rI, f):
             uR, uI = u[:2], u[2:]
-            mR = -omega ** 2 * rho * (uR + xi * uI) - f
-            mI = -omega ** 2 * rho * (uI - xi * uR)
+            mR = -omega ** 2 * (rR * uR - rI * uI) - f
+            mI = -omega ** 2 * (rR * uI + rI * uR)
             return jnp.concatenate([mR, mI])
         return inertia
 

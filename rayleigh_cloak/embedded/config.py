@@ -69,11 +69,23 @@ class DomainCfg(BaseModel):
 
 
 class AbsorbingCfg(BaseModel):
-    """Complex-stiffness absorbing layer: C -> (1 + i xi) C, rho -> (1 - i xi) rho,
-    xi(d) = xi_max (d / L)^power, summed over x and y in the corners."""
+    """Absorbing layer outside the physical box; its outer edge is clamped.
+
+    ``kind="pml"`` (default): perfectly matched layer by complex coordinate
+    stretching, s_j = 1 - i sigma_j(x_j) / omega (time factor e^{+i omega t}),
+    sigma(d) = sigma_max (d / L)^power, so that
+        C_ijkl -> C_ijkl s_x s_y / (s_j s_l),   rho -> rho s_x s_y.
+    sigma_max follows from the target normal-incidence round-trip reflection
+    R = exp(-2 sigma_max L / ((power + 1) c_P)) (c_P is the worst case).
+
+    ``kind="damping"``: graded loss, not matched: C -> (1 + i xi) C,
+    rho -> (1 - i xi) rho, xi = xi_max [(d_x / L)^power + (d_y / L)^power].
+    """
+    kind: Literal["pml", "damping"] = "pml"
     thickness: float = 4.0
-    xi_max: float = 4.0
     power: int = 2
+    reflection: float = 1e-6      # pml only
+    xi_max: float = 4.0           # damping only
 
 
 class MeshCfg(BaseModel):
@@ -172,5 +184,7 @@ class EmbeddedCloakConfig(BaseModel):
 def load_embedded_config(path: str | Path) -> EmbeddedCloakConfig:
     with open(path) as f:
         data = yaml.safe_load(f) or {}
-    data.pop("studies", None)   # study definitions are read by the driver script
+    # study definitions and named polarizations are read by the driver script
+    data.pop("studies", None)
+    data.pop("polarizations", None)
     return EmbeddedCloakConfig(**data)

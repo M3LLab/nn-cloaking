@@ -34,7 +34,7 @@ from rayleigh_cloak.embedded.linsolve import solve_linear
 from rayleigh_cloak.embedded.mesh import TaggedMesh, build_mesh
 from rayleigh_cloak.embedded.problem import build_problem, make_geometry
 from rayleigh_cloak.embedded.sampling import (
-    PointEvaluator, annulus_grid, exterior_grid, rel_l2, ring_points,
+    PointEvaluator, annulus_grid, exterior_grid, rel_l2, rel_l2_mag, ring_points,
 )
 
 ALL_CASES = ("A", "B", "C", "D")
@@ -88,7 +88,8 @@ def run_cases(cfg: EmbeddedCloakConfig, cases=ALL_CASES, out_dir: str | None = N
     with open(os.path.join(out_dir, "config.json"), "w") as f:
         f.write(cfg.model_dump_json(indent=2))
     print(f"=== run {tag or out_dir}: eps={cfg.cloak.eps} map={cfg.cloak.radial_map} "
-          f"scale={cfg.mesh.scale} L_abs={cfg.absorbing.thickness} xi_max={cfg.absorbing.xi_max}")
+          f"scale={cfg.mesh.scale} layer={cfg.absorbing.kind} L={cfg.absorbing.thickness} "
+          f"p={cfg.absorbing.power} R={cfg.absorbing.reflection} xi_max={cfg.absorbing.xi_max}")
     res: dict[str, CaseResult] = {}
     need_full = any(c in cases for c in "ABC")
     if need_full:
@@ -130,7 +131,7 @@ def compute_metrics(cfg: EmbeddedCloakConfig, res: dict[str, CaseResult],
     """
     ref = ref if ref is not None else res.get("A")
     P = exterior_grid(cfg)
-    out = {"n_exterior_points": int(len(P)), "exterior": {}, "rings": {}}
+    out = {"n_exterior_points": int(len(P)), "exterior": {}, "exterior_mag": {}, "rings": {}}
     vals = {k: r.evaluator(P)(r.u) for k, r in res.items()}
     u_ref = ref.evaluator(P)(ref.u) if ref is not None else None
     if u_ref is not None:
@@ -138,18 +139,24 @@ def compute_metrics(cfg: EmbeddedCloakConfig, res: dict[str, CaseResult],
         for k, v in vals.items():
             if res.get(k) is not ref:
                 out["exterior"][f"{k}_vs_ref"] = rel_l2(v, u_ref)
+                out["exterior_mag"][f"{k}_vs_ref"] = rel_l2_mag(v, u_ref)
     if "A" in vals:
         from rayleigh_cloak.embedded.analytic import green_gaussian
-        out["exterior"]["A_vs_analytic"] = rel_l2(vals["A"], green_gaussian(cfg, P))
+        ua = green_gaussian(cfg, P)
+        out["exterior"]["A_vs_analytic"] = rel_l2(vals["A"], ua)
+        out["exterior_mag"]["A_vs_analytic"] = rel_l2_mag(vals["A"], ua)
     if "C" in vals and "D" in vals:
         out["exterior"]["C_vs_D"] = rel_l2(vals["C"], vals["D"])
+        out["exterior_mag"]["C_vs_D"] = rel_l2_mag(vals["C"], vals["D"])
     for rho in cfg.metrics.ring_radii_over_b:
         Pr = ring_points(cfg, rho * cfg.cloak.b)
         ring = {}
         u_rr = ref.evaluator(Pr)(ref.u) if ref is not None else None
         for k, r in res.items():
             if u_rr is not None and r is not ref:
-                ring[f"{k}_vs_ref"] = rel_l2(r.evaluator(Pr)(r.u), u_rr)
+                ur = r.evaluator(Pr)(r.u)
+                ring[f"{k}_vs_ref"] = rel_l2(ur, u_rr)
+                ring[f"mag_{k}_vs_ref"] = rel_l2_mag(ur, u_rr)
         out["rings"][f"{rho:g}b"] = ring
     # interior mapping check: u_C(x) vs u_D(Xi^{-1}(x)) inside the annulus
     if "C" in res and "D" in res:
@@ -160,6 +167,7 @@ def compute_metrics(cfg: EmbeddedCloakConfig, res: dict[str, CaseResult],
         uC = res["C"].evaluator(Pin)(res["C"].u)
         uD = res["D"].evaluator(Xv)(res["D"].u)
         out["interior_C_vs_D_mapped"] = rel_l2(uC, uD)
+        out["interior_mag_C_vs_D_mapped"] = rel_l2_mag(uC, uD)
         # same but excluding the eps boundary layer next to r = a (outer 90 %)
         r = np.hypot(Pin[:, 0] - cfg.cloak.xc, Pin[:, 1] - cfg.cloak.yc)
         far = r > cfg.cloak.a + 0.1 * (cfg.cloak.b - cfg.cloak.a)

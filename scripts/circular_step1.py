@@ -9,6 +9,10 @@ Usage
     .venv/bin/python scripts/circular_step1.py --config ... --study absorbing   # absorbing-layer sensitivity
     .venv/bin/python scripts/circular_step1.py --config ... --study map         # linear vs quadratic map
     .venv/bin/python scripts/circular_step1.py --config ... --study summary     # rebuild summary.md only
+    .venv/bin/python scripts/circular_step1.py --config ... --polarization horizontal   # one force direction
+
+Every study runs once per entry of ``polarizations`` in the YAML, in
+``<output_dir>/<name>/``; ``<output_dir>/summary.md`` compares them.
 
 Every study point runs in a fresh subprocess (memory is returned to the OS
 between runs) and is skipped when its ``case_*.npz`` files already exist with
@@ -70,6 +74,9 @@ def _row(m: dict, **extra) -> dict:
             row[k] = e[k]
     if "interior_C_vs_D_mapped" in m:
         row["interior"] = m["interior_C_vs_D_mapped"]
+        row["mag_interior"] = m["interior_mag_C_vs_D_mapped"]
+    for k, v in m.get("exterior_mag", {}).items():
+        row[f"mag_{k}"] = v
     for ring, vals in m.get("rings", {}).items():
         for k, v in vals.items():
             row[f"ring{ring}_{k}"] = v
@@ -101,6 +108,8 @@ def study_base(cfg, out, force):
     plots.plot_fields(cfg, res, os.path.join(fig, "04_fields_ABC.png"))
     plots.plot_scattered(cfg, res, os.path.join(fig, "05_scattered.png"))
     plots.plot_lines(cfg, res, os.path.join(fig, "06_lines.png"))
+    plots.plot_fields_components(cfg, res, os.path.join(fig, "components", "04_fields_ABC.png"))
+    plots.plot_scattered_components(cfg, res, os.path.join(fig, "components", "05_scattered.png"))
     json.dump(_row(m, eps=cfg.cloak.eps), open(os.path.join(out, "base.json"), "w"), indent=2)
 
 
@@ -128,14 +137,14 @@ def study_eps(cfg, out, spec, force):
     from rayleigh_cloak.embedded import plots
     rows = study_sweep(cfg, out, "eps", spec, force)
     json.dump(rows, open(os.path.join(out, "eps.json"), "w"), indent=2)
-    plots.plot_eps_study(rows, rows[0]["B_vs_ref"], cfg.cloak.a,
+    plots.plot_eps_study(rows, rows[0]["mag_B_vs_ref"], cfg.cloak.a,
                          os.path.join(out, "figures", "07_eps_convergence.png"))
 
 
 def study_mesh(cfg, out, spec, force):
     from rayleigh_cloak.embedded import plots
     from rayleigh_cloak.embedded.run import load_cases
-    from rayleigh_cloak.embedded.sampling import exterior_grid, rel_l2
+    from rayleigh_cloak.embedded.sampling import exterior_grid, rel_l2_mag
     rows = study_sweep(cfg, out, "mesh", spec, force)
     # cross-mesh self-convergence against the finest level, on common sampling points
     done = [i for i, r in enumerate(rows) if "skipped" not in r]
@@ -148,14 +157,14 @@ def study_mesh(cfg, out, spec, force):
     for row, d in zip(rows, dirs):
         res = load_cases(d)
         for k in ("A", "C"):
-            row[f"{k}_vs_finest"] = rel_l2(res[k].evaluator(P)(res[k].u), ref[k])
+            row[f"{k}_vs_finest"] = rel_l2_mag(res[k].evaluator(P)(res[k].u), ref[k])
     json.dump(rows, open(os.path.join(out, "mesh.json"), "w"), indent=2)
     plots.plot_mesh_study([r for r in rows], os.path.join(out, "figures", "08_mesh_sensitivity.png"))
 
 
 def study_variants(cfg, out, name, spec, force, compare_A_to_base=False):
     from rayleigh_cloak.embedded.run import load_cases
-    from rayleigh_cloak.embedded.sampling import exterior_grid, rel_l2
+    from rayleigh_cloak.embedded.sampling import exterior_grid, rel_l2_mag
     rows = []
     base_dir = os.path.join(out, "base")
     baseA = load_cases(base_dir).get("A") if compare_A_to_base else None
@@ -169,7 +178,7 @@ def study_variants(cfg, out, name, spec, force, compare_A_to_base=False):
         row = _row(m, variant=json.dumps(upd))
         if baseA is not None:
             A = load_cases(d)["A"]
-            row["A_vs_baseA"] = rel_l2(A.evaluator(P)(A.u), baseA.evaluator(P)(baseA.u))
+            row["A_vs_baseA"] = rel_l2_mag(A.evaluator(P)(A.u), baseA.evaluator(P)(baseA.u))
         rows.append(row)
     json.dump(rows, open(os.path.join(out, f"{name}.json"), "w"), indent=2)
 
@@ -183,21 +192,23 @@ def _fmt(x):
 
 def write_summary(cfg, out):
     lines = ["# Step 1 — continuous regularised ideal cloak: results", ""]
-    lines.append("Normalised complex-displacement L2 error on the common exterior sampling grid "
-                 f"(spacing {cfg.metrics.grid_spacing} m, r > {1 + cfg.metrics.exterior_margin:g} b, "
-                 f"|x − x_s| > {cfg.metrics.source_exclusion} m, physical box only).  "
-                 "`X_vs_ref` = ‖u_X − u_A‖ / ‖u_A‖.\n")
+    lines.append("Normalised L2 error of the total displacement magnitude ‖u‖ = sqrt(|u_x|² + |u_y|²) on the "
+                 f"common exterior sampling grid (spacing {cfg.metrics.grid_spacing} m, "
+                 f"r > {1 + cfg.metrics.exterior_margin:g} b, |x − x_s| > {cfg.metrics.source_exclusion} m, "
+                 "physical box only). `mag_X_vs_ref` = ‖ ‖u_X‖ − ‖u_A‖ ‖ / ‖ ‖u_A‖ ‖. "
+                 "Columns without `mag_` are the complex-displacement error ‖u_X − u_A‖ / ‖u_A‖, "
+                 "which also sees phase and direction.\n")
     p = os.path.join(out, "base.json")
     if os.path.exists(p):
         b = json.load(open(p))
         lines += ["## Base case", "", "| metric | value |", "|---|---|"]
         lines += [f"| {k} | {_fmt(v)} |" for k, v in b.items()]
         lines.append("")
-    for name, cols in [("eps", ["eps", "B_vs_ref", "C_vs_ref", "D_vs_ref", "C_vs_D", "interior", "h_inner", "n_cells_A"]),
-                       ("mesh", ["scale", "h_bg", "n_cells_A", "n_dofs_A", "A_vs_analytic", "B_vs_ref", "C_vs_ref",
-                                 "D_vs_ref", "C_vs_D", "A_vs_finest", "C_vs_finest", "peak_rss_gib"]),
-                       ("absorbing", ["variant", "A_vs_analytic", "A_vs_baseA", "B_vs_ref", "C_vs_ref", "n_cells_A"]),
-                       ("map", ["variant", "C_vs_ref", "D_vs_ref", "C_vs_D", "interior"])]:
+    for name, cols in [("eps", ["eps", "mag_B_vs_ref", "mag_C_vs_ref", "mag_D_vs_ref", "mag_C_vs_D", "mag_interior", "C_vs_ref", "h_inner", "n_cells_A"]),
+                       ("mesh", ["scale", "h_bg", "n_cells_A", "n_dofs_A", "mag_A_vs_analytic", "mag_B_vs_ref", "mag_C_vs_ref",
+                                 "mag_D_vs_ref", "mag_C_vs_D", "A_vs_finest", "C_vs_finest", "C_vs_ref", "peak_rss_gib"]),
+                       ("absorbing", ["variant", "mag_A_vs_analytic", "A_vs_baseA", "mag_B_vs_ref", "mag_C_vs_ref", "C_vs_ref", "n_cells_A"]),
+                       ("map", ["variant", "mag_C_vs_ref", "mag_D_vs_ref", "mag_C_vs_D", "mag_interior", "C_vs_ref"])]:
         p = os.path.join(out, f"{name}.json")
         if not os.path.exists(p):
             continue
@@ -210,30 +221,122 @@ def write_summary(cfg, out):
     print(f"  wrote {os.path.join(out, 'summary.md')}")
 
 
+# ── polarization comparison ─────────────────────────────────────────
+
+
+def _mirror_symmetric(cfg) -> bool:
+    """True if reflection in y = x maps the whole problem onto itself."""
+    c, s, d = cfg.cloak, cfg.source, cfg.domain
+    return (c.xc == c.yc and s.x == s.y and d.x_min == d.y_min and d.x_max == d.y_max)
+
+
+def mirror_errors(cfg, out) -> dict:
+    """Relative L2 between the horizontal solve and the mirrored vertical solve."""
+    import numpy as np
+    from rayleigh_cloak.embedded.run import load_cases
+    from rayleigh_cloak.embedded.sampling import exterior_grid, rel_l2
+    V = load_cases(os.path.join(out, "vertical", "base"))
+    H = load_cases(os.path.join(out, "horizontal", "base"))
+    P = exterior_grid(cfg)
+    return {k: rel_l2(H[k].evaluator(P)(H[k].u), V[k].evaluator(P[:, ::-1])(V[k].u)[:, ::-1])
+            for k in sorted(V) if k in H}
+
+
+def write_comparison(cfg, out, names):
+    rows = {n: json.load(open(os.path.join(out, n, "base.json")))
+            for n in names if os.path.exists(os.path.join(out, n, "base.json"))}
+    if not rows:
+        return
+    names = list(rows)
+    L = ["# Step 1: comparison of force directions", "",
+         "Exterior normalised L2 error of the total displacement magnitude ‖u‖ on the common "
+         "sampling grid (`mag_`); the last rows give the complex-displacement error for reference. "
+         "Each direction is a separate solve.", "",
+         "## Base case", "", "| metric | " + " | ".join(names) + " |",
+         "|---|" + "---|" * len(names)]
+    keys = ["mag_B_vs_ref", "mag_C_vs_ref", "mag_D_vs_ref", "mag_C_vs_D", "mag_interior",
+            "mag_A_vs_analytic", "ring1.25b_mag_C_vs_ref", "ring2b_mag_C_vs_ref",
+            "B_vs_ref", "C_vs_ref", "C_vs_D", "A_vs_analytic"]
+    L += [f"| {k} | " + " | ".join(_fmt(rows[n].get(k)) for n in names) + " |" for k in keys]
+    eps = {n: json.load(open(os.path.join(out, n, "eps.json")))
+           for n in names if os.path.exists(os.path.join(out, n, "eps.json"))}
+    if len(eps) == len(names):
+        L += ["", "## C vs A against eps (‖u‖ error)", "", "| eps | " + " | ".join(names) + " |",
+              "|---|" + "---|" * len(names)]
+        for i, r in enumerate(eps[names[0]]):
+            L.append(f"| {_fmt(r['eps'])} | " + " | ".join(_fmt(eps[n][i].get("mag_C_vs_ref")) for n in names) + " |")
+    if {"vertical", "horizontal"} <= set(names) and _mirror_symmetric(cfg):
+        L += ["", "## Mirror check", "",
+              "The problem is symmetric about y = x, so in the continuum the horizontal field is "
+              "the vertical field reflected (x <-> y, u_x <-> u_y). The directions are therefore "
+              "not independent tests at this source position; the numbers below measure "
+              "the mesh's asymmetry. Complex-displacement error, since this compares the fields themselves.", "", "| case | horizontal vs mirrored vertical |", "|---|---|"]
+        L += [f"| {k} | {_fmt(v)} |" for k, v in mirror_errors(cfg, out).items()]
+    if {"vertical", "horizontal", "both"} <= set(names):
+        L += ["", "## Superposition check", "",
+              "The problem is linear, so the `both` solve should equal (u_V + u_H) / sqrt(2). Complex-displacement "
+              "error: magnitudes do not superpose.", "",
+              "| case | both vs (u_V + u_H) / sqrt(2) |", "|---|---|"]
+        L += [f"| {k} | {_fmt(v)} |" for k, v in superposition_errors(cfg, out).items()]
+    with open(os.path.join(out, "summary.md"), "w") as f:
+        f.write("\n".join(L) + "\n")
+    print(f"  wrote {os.path.join(out, 'summary.md')}")
+
+
+def superposition_errors(cfg, out) -> dict:
+    import numpy as np
+    from rayleigh_cloak.embedded.run import load_cases
+    from rayleigh_cloak.embedded.sampling import exterior_grid, rel_l2
+    V, H, B = (load_cases(os.path.join(out, n, "base")) for n in ("vertical", "horizontal", "both"))
+    P = exterior_grid(cfg)
+    return {k: rel_l2(B[k].evaluator(P)(B[k].u),
+                      (V[k].evaluator(P)(V[k].u) + H[k].evaluator(P)(H[k].u)) / np.sqrt(2.0))
+            for k in sorted(B) if k in V and k in H}
+
+
+def run_studies(cfg, studies, todo, force):
+    out = cfg.output_dir
+    os.makedirs(out, exist_ok=True)
+    for s in todo:
+        if s == "base":
+            study_base(cfg, out, force)
+        elif s == "eps":
+            study_eps(cfg, out, studies["eps"], force)
+        elif s == "mesh":
+            study_mesh(cfg, out, studies["mesh"], force)
+        elif s == "absorbing":
+            study_variants(cfg, out, "absorbing", studies["absorbing"], force, compare_A_to_base=True)
+        elif s == "map":
+            study_variants(cfg, out, "map", studies["map"], force)
+    write_summary(cfg, out)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/circular_embedded/step1.yaml")
     ap.add_argument("--study", default="all",
                     choices=["all", "base", "eps", "mesh", "absorbing", "map", "summary"])
+    ap.add_argument("--polarization", default="all",
+                    help="a name from `polarizations` in the YAML, or 'all'")
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
     cfg = load_embedded_config(args.config)
-    studies = (yaml.safe_load(open(args.config)) or {}).get("studies", {})
-    out = cfg.output_dir
-    os.makedirs(out, exist_ok=True)
+    raw = yaml.safe_load(open(args.config)) or {}
+    studies = raw.get("studies", {})
+    pols = raw.get("polarizations") or {"default": list(cfg.source.direction)}
+    if args.polarization == "all":
+        selected = list(pols)
+    elif args.polarization in pols:
+        selected = [args.polarization]
+    else:
+        ap.error(f"unknown polarization {args.polarization!r}; choose from {list(pols)} or all")
     todo = ["base", "eps", "mesh", "absorbing", "map"] if args.study == "all" else [args.study]
-    for s in todo:
-        if s == "base":
-            study_base(cfg, out, args.force)
-        elif s == "eps":
-            study_eps(cfg, out, studies["eps"], args.force)
-        elif s == "mesh":
-            study_mesh(cfg, out, studies["mesh"], args.force)
-        elif s == "absorbing":
-            study_variants(cfg, out, "absorbing", studies["absorbing"], args.force, compare_A_to_base=True)
-        elif s == "map":
-            study_variants(cfg, out, "map", studies["map"], args.force)
-    write_summary(cfg, out)
+    for name in selected:
+        print(f"##### polarization {name}: direction {pols[name]}", flush=True)
+        pcfg = cfg.with_updates({"source.direction": pols[name],
+                                 "output_dir": os.path.join(cfg.output_dir, name)})
+        run_studies(pcfg, studies, todo, args.force)
+    write_comparison(cfg, cfg.output_dir, list(pols))
 
 
 if __name__ == "__main__":

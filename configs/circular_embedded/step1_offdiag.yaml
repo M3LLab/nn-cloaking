@@ -1,0 +1,71 @@
+# Step 1 — same as step1.yaml with the source off the diagonal (base study only).
+#
+# Background: paper (Chatzopoulos et al. 2023) soil, lam = mu = 144 MPa,
+# rho = 1600 kg/m^3  ->  cs = 300 m/s, cp = 519.6 m/s.
+# f = 200 Hz         ->  lambda_S = 1.5 m = b, lambda_P = 2.60 m.
+#
+# Reproduce everything:
+#   .venv/bin/python scripts/circular_step1.py --config configs/circular_embedded/step1_offdiag.yaml --study base
+# Single force direction:  --polarization vertical | horizontal  (default: all listed below)
+
+material:
+  lam: 144.0e+6
+  mu: 144.0e+6
+  rho: 1600.0
+
+cloak:
+  xc: 0.0
+  yc: 0.0
+  a: 0.5            # traction-free cavity radius
+  b: 1.5            # bonded cloak/background interface (b = 3a)
+  eps: 0.005        # regularisation: virtual hole radius (eps/a = 0.01)
+  radial_map: linear
+
+source:              # below-left of the cloak, outside r = b and the absorbing layer
+  x: -3.5   # off the symmetry line y = x, so the force directions are independent tests
+  y: -2.0
+  direction: [0.0, 1.0]   # overridden per run by `polarizations` below
+  amplitude: 1000.0       # total force per unit thickness F0 [N/m]
+  sigma: 0.075            # Gaussian width [m] (lambda_S / 20)
+  frequency_hz: 200.0
+
+domain:              # physical box (absorbing layer added outside it on all four sides)
+  x_min: -5.0
+  x_max: 5.0
+  y_min: -5.0
+  y_max: 5.0
+
+absorbing:           # true PML: s_j = 1 - i sigma_j / omega, outer edge clamped
+  kind: pml
+  thickness: 2.6     # ~1 lambda_P
+  power: 2
+  reflection: 1.0e-6 # target round-trip reflection, sets sigma_max
+
+mesh:
+  ele_type: TRI6
+  gauss_order: 4           # 6-point rule
+  elems_per_wavelength: 16 # background h = lambda_S / 16 (A vs analytic 2.5e-4)
+  cloak_refine: 2.0        # annulus h = h_bg / 2
+  inner_bl_factor: 2.0     # h at r = a = 2 * eps * dr/dR(eps)
+  inner_h_max: 0.02
+  inner_h_min: 1.0e-4
+  inner_grading: 0.3
+  source_h: 0.5            # h at the source = 0.5 sigma
+  scale: 1.0
+  hole_h_factor: 0.5       # case D: h at the eps-hole = 0.5 eps
+
+metrics:
+  grid_spacing: 0.05
+  exterior_margin: 0.02    # sample r > 1.02 b
+  source_exclusion: 0.75   # drop |x - xs| < lambda_S / 2
+  box_margin: 0.0
+  ring_radii_over_b: [1.25, 2.0]
+  ring_points: 720
+
+output_dir: output/circular_step1_offdiag
+
+# Every study runs once per entry, in <output_dir>/<name>/ (separate solves).
+polarizations:
+  vertical: [0.0, 1.0]
+  horizontal: [1.0, 0.0]
+  both: [1.0, 1.0]        # one source, both directions in phase; normalised, total force still F0

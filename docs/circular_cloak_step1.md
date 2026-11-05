@@ -15,10 +15,10 @@ medium and excited by bulk P and S waves.
 | cloak | annulus a < r < b, a = 0.5 m, b = 1.5 m (= λ_S), centre (x_c, y_c) = (0, 0), configurable |
 | cavity | r < a removed; σ·n = 0 on the entire circle r = a (natural BC, no surface term) |
 | interface | r = b bonded: conforming mesh, displacement and traction continuity are built into the weak form |
-| domain | physical box [−5, 5]² m, absorbing layer of thickness L on **all four sides**, outer edge clamped |
-| absorbing layer | C → (1 + iξ)C, ρ → (1 − iξ)ρ, ξ = ξ_max[(d_x/L)^p + (d_y/L)^p]; base L = 6 m (2.3 λ_P), ξ_max = 1.5, p = 3 |
-| source | Gaussian body force f = F₀ d̂ g(x)/∫g, g = exp(−‖x − x_s‖²/2σ²), x_s = (−3, −3) (below-left), d̂ = (0, 1), F₀ = 1000 N/m, σ = 0.075 m |
-| elements | TRI6 (isoparametric, mid-side nodes on the circles), 6-point quadrature; h_bg = λ_S/12, h_cloak = h_bg/2, h(r=a) = 2ε dr/dR(ε), h_src = σ/2 |
+| domain | physical box [−5, 5]² m, PML of thickness L on **all four sides**, outer edge clamped |
+| absorbing layer | true PML by complex coordinate stretching, s_j = 1 − iσ_j(x_j)/ω, σ = σ_max (d/L)^p, σ_max = (p+1) c_P ln(1/R) / 2L; base L = 2.6 m (≈ λ_P), p = 2, R = 10⁻⁶. The earlier graded damping layer remains available as `absorbing.kind: damping` |
+| source | Gaussian body force f = F₀ d̂ g(x)/∫g, g = exp(−‖x − x_s‖²/2σ²), x_s = (−3, −3) (below-left), F₀ = 1000 N/m; three directions d̂, each a separate solve: vertical (0, 1), horizontal (1, 0), both (1, 1)/√2, σ = 0.075 m |
+| elements | TRI6 (isoparametric, mid-side nodes on the circles), 6-point quadrature; h_bg = λ_S/16, h_cloak = h_bg/2, h(r=a) = 2ε dr/dR(ε), h_src = σ/2 |
 
 The source's normalising integral ∫g is evaluated with the **same quadrature as the
 solve**, so the discrete total force is exactly F₀ on every mesh (`source.ratio` in each
@@ -26,7 +26,11 @@ case's `info` reports ∫g_discrete / 2πσ² ≈ 1.0000).
 
 Strong form solved:
 
-    ∂_j[(1 + iξ) C_ijkl ∂_l u_k] + ω²(1 − iξ) ρ u_i + f_i = 0.
+    ∂_j[C^c_ijkl ∂_l u_k] + ω² ρ^c u_i + f_i = 0,
+    C^c_ijkl = C_ijkl s_x s_y / (s_j s_l),   ρ^c = ρ s_x s_y,
+
+with s_x = s_y = 1 in the physical box, so C^c, ρ^c reduce to the real background or cloak
+values there. Indices j and l carry the stretch because the derivative sits on them.
 
 ## 2. Transformation and material (audit)
 
@@ -106,93 +110,143 @@ Near r = a the ε-hole's near field is compressed into a radial layer of physica
 A, B and C share all nodes outside r = a. All metrics are evaluated on a **common,
 mesh-independent** set of exterior points (uniform grid, spacing 0.05 m, r > 1.02b,
 ‖x − x_s‖ > 0.75 m = λ_S/2, physical box only), by exact isoparametric interpolation
-(`embedded/sampling.py`):
+(`embedded/sampling.py`).
 
-    e_X = ‖u_X − u_A‖₂ / ‖u_A‖₂   (complex, both components).
+**Primary metric: total displacement magnitude**, ‖u‖ = √(|u_x|² + |u_y|²):
+
+    e_X = ‖ ‖u_X‖ − ‖u_A‖ ‖₂ / ‖ ‖u_A‖ ‖₂
+
+**Secondary metric: complex displacement**, e^c_X = ‖u_X − u_A‖₂ / ‖u_A‖₂. The magnitude
+metric cannot see phase or the direction of u, so two different fields with equal ‖u‖ score
+zero; e^c is the stricter test and is roughly twice e_X here. The superposition and mirror
+checks use e^c because they compare fields, and magnitudes do not superpose.
 
 Also reported: rings r = 1.25b and 2b; C vs D outside (implementation + discretisation);
 u_C(x) vs u_D(Ξ⁻¹x) inside the annulus; A vs the closed-form Green tensor
 (`embedded/analytic.py`, Gaussian source exact through the factor e^{−k²σ²/2}).
 
-## 5. Results (base: ε = 0.005 m = 0.01a, linear map, TRI6, 12 elements/λ_S)
+## 5. Results (base: ε = 0.005 m = 0.01a, linear map, TRI6, 16 elements/λ_S, PML)
 
-Figures: `docs/figures/circular_step1/` (copies of `output/circular_step1/figures/`);
-full tables: `docs/figures/circular_step1/summary.md`.
+Tables in 5.0–5.4 are for the **vertical** force; 5.5 compares all force directions and source
+positions. Figures: `docs/figures/circular_step1/{vertical,horizontal,both}/` and
+`docs/figures/circular_step1_offdiag/{vertical,horizontal,both}/`; component plots
+(Re u_x, Re u_y) are in each `components/` subfolder. Full tables: `summary.md` in each folder.
 
-| quantity | value |
-|---|---|
-| **B** hole, no cloak, vs A | **0.312** (rings 1.25b: 0.441, 2b: 0.328) |
-| **C** regularised ideal cloak, vs A | **1.33 × 10⁻⁴** (rings: 1.89e-4, 1.41e-4) |
-| D virtual ε-hole vs A (intrinsic ε error) | 1.51 × 10⁻⁴ |
-| C vs D, exterior (implementation + discretisation) | 3.8 × 10⁻⁵ |
-| u_C(x) vs u_D(Ξ⁻¹x), inside the annulus | 1.7 × 10⁻⁴ |
-| A vs closed-form Green tensor | 9.5 × 10⁻⁴ (absorbing-layer floor ≈ 7 × 10⁻⁴) |
-| mesh / DOFs (case A) | 88 470 TRI6, 710 580 real DOFs, 6.6 GiB peak, ~1 min for A–D |
+### 5.0 Base case
 
-* `01_setup_bc_source.png` — domain, absorbing frame (ξ map), clamped outer edge, cavity,
+| quantity | ‖u‖ error | complex error |
+|---|---|---|
+| **B** hole, no cloak, vs A | **0.158** | 0.312 |
+| **C** regularised ideal cloak, vs A | **6.68e-05** | 0.00013 |
+| C vs A on ring 1.25b | 0.000101 | 0.000185 |
+| C vs A on ring 2b | 7.68e-05 | 0.000138 |
+| D virtual ε-hole vs A (error from ε alone) | 7.67e-05 | 0.000151 |
+| C vs D, exterior (implementation + discretisation) | 1.18e-05 | 2.61e-05 |
+| u_C(x) vs u_D(Ξ⁻¹x), inside the annulus | 4.65e-05 | 0.000125 |
+| A vs closed-form Green tensor | 5e-05 | 0.000249 |
+
+Mesh: 82 738 TRI6, 664 516 real DOFs, about 6 GiB peak, about 1 min for cases A–D.
+
+* `01_setup_bc_source.png` — domain, PML (stretching map), clamped outer edge, cavity,
   bonded interface, source and the exterior sampling set.
 * `02_mesh.png` — full mesh, cloak, graded inner boundary (h = 6.7 mm at r = a), source.
 * `03_material.png` — polar components and ρ'/ρ vs r; Cartesian C'_xxxx; minor-symmetry
   violation map (up to 45 % at r = a).
-* `04_fields_ABC.png` — Re u_x, Re u_y, |u| for A, B, C on common colour scales.
-* `05_scattered.png` — B − A and C − A (C masked for r < b; the field there is the
-  transformed one); C − A shown again with its own scale (×2500).
-* `06_lines.png` — |u| on rings 1.25b, 2b; Re u_y along the source–centre line.
+* `04_fields_ABC.png` — ‖u‖ for A, B, C on one colour scale.
+* `05_scattered.png` — ‖u_B‖ − ‖u_A‖ and ‖u_C‖ − ‖u_A‖ (C masked for r < b; the field there
+  is the transformed one), then C alone on its own scale.
+* `06_lines.png` — ‖u‖ on rings 1.25b, 2b and along the source–centre line.
 
-### Regularisation (ε) — `07_eps_convergence.png`
+### 5.1 Regularisation (ε) — `07_eps_convergence.png`
 
-| ε/a | C vs A | D vs A | C vs D | interior |
+| ε/a | C vs A | D vs A | C vs D | interior | C vs A, complex |
+|---|---|---|---|---|---|
+| 0.2   | 3.12e-2 | 3.11e-2 | 1.2e-4 | 3.4e-4 | 6.27e-2 |
+| 0.1   | 7.87e-3 | 7.88e-3 | 5.3e-6 | 3.7e-5 | 1.56e-2 |
+| 0.05  | 1.88e-3 | 1.94e-3 | 5.8e-5 | 1.9e-4 | 3.72e-3 |
+| 0.02  | 2.83e-4 | 3.07e-4 | 2.7e-5 | 1.0e-4 | 5.55e-4 |
+| 0.01  | 6.68e-5 | 7.67e-5 | 1.2e-5 | 4.6e-5 | 1.30e-4 |
+| 0.005 | 1.62e-5 | 1.91e-5 | 5.1e-6 | 2.1e-5 | 3.14e-5 |
+
+D vs A falls as ε² (×4 per halving), the scattering of a small traction-free hole. C follows
+D, i.e. the finite-ε cloak behaves as the regularised near-cloak it is supposed to be and
+approaches the ideal limit as ε → 0. C vs D is small but not monotone in ε: h at r = a is
+tied to δ = ε·dr/dR(ε) only below its cap (`inner_h_max`), so the mesh changes along the sweep.
+
+### 5.2 Mesh — `08_mesh_sensitivity.png` (ε/a = 0.01, all sizes scaled together)
+
+| scale | h_bg [m] | el/λ_S | elements | A vs analytic | C vs A | C vs D | A vs finest | C vs D, complex |
+|---|---|---|---|---|---|---|---|---|
+| 2.0  | 0.188 | 8    | 21 562  | 4.84e-4 | 7.51e-5 | 4.76e-5 | 4.78e-4 | 1.34e-4 |
+| 1.4  | 0.131 | 11.4 | 43 022  | 1.52e-4 | 6.58e-5 | 1.84e-5 | 1.47e-4 | 4.31e-5 |
+| 1.0  | 0.094 | 16   | 82 738  | 5.00e-5 | 6.68e-5 | 1.18e-5 | 4.70e-5 | 2.61e-5 |
+| 0.75 | 0.070 | 21.3 | 144 878 | 1.92e-5 | 6.83e-5 | 9.60e-6 | (ref) | 2.02e-5 |
+| 0.6  | 0.056 | 26.7 | 225 204 | skipped by memory guard — run on the large server |
+
+A converges to the analytic solution at ≈ h^3.3 with no floor seen. C vs A saturates at the
+ε-error from 11 el/λ_S. C vs D decreases but is flattening near 1e-5 (2e-5 complex) for the
+vertical force; whether it keeps converging needs the finer server runs.
+
+### 5.3 Absorbing layers (ε/a = 0.01, 16 el/λ_S)
+
+| layer | elements | A vs analytic | A vs base A | C vs A |
 |---|---|---|---|---|
-| 0.2   | 6.27e-2 | 6.23e-2 | 3.9e-4 | 9.9e-4 |
-| 0.1   | 1.57e-2 | 1.56e-2 | 2.0e-5 | 1.8e-4 |
-| 0.05  | 3.73e-3 | 3.83e-3 | 1.1e-4 | 4.0e-4 |
-| 0.02  | 5.46e-4 | 6.05e-4 | 7.6e-5 | 3.0e-4 |
-| 0.01  | 1.33e-4 | 1.51e-4 | 3.8e-5 | 1.7e-4 |
-| 0.005 | 4.01e-5 | 3.76e-5 | 3.2e-5 | 1.5e-4 |
+| **PML L = 2.6 m, p = 2, R = 1e-6 (base)** | 82 738 | 5.00e-5 | — | 6.68e-5 |
+| PML L = 1.5 m, R = 1e-4 | 66 080 | 1.08e-4 | 9.7e-5 | 6.71e-5 |
+| PML L = 4.0 m | 107 256 | 5.01e-5 | 1.4e-5 | 6.71e-5 |
+| PML R = 1e-4 | 82 738 | 6.60e-5 | 4.4e-5 | 6.68e-5 |
+| PML R = 1e-8 | 82 738 | 4.99e-5 | 1.0e-6 | 6.68e-5 |
+| PML p = 3 | 82 738 | 5.01e-5 | 1.0e-6 | 6.68e-5 |
+| damping L = 6 m, ξ_max = 1.5, p = 3 (previous base) | 149 054 | 4.43e-4 | 4.4e-4 | 6.71e-5 |
+| damping L = 4 m, ξ_max = 4, p = 2 (original repo layer) | 107 256 | 1.80e-2 | 1.8e-2 | 6.64e-5 |
 
-D vs A falls exactly as ε² (×4 per halving), the scattering of a small traction-free hole.
-C follows D until it meets the discretisation floor C vs D ≈ 3 × 10⁻⁵, i.e. the
-finite-ε cloak behaves as the regularised near-cloak it is supposed to be, converging to
-the ideal limit as ε → 0. (h at r = a is tied to δ = ε·dr/dR(ε), so the mesh near the
-cavity refines with ε.)
+The PML is more accurate with a far thinner layer. The **cloak metric is insensitive to the
+layer** (6.6–6.7e-5) because A, B and C share the same layer and its reflections; absolute
+field accuracy is not.
 
-### Mesh — `08_mesh_sensitivity.png` (ε/a = 0.01, all sizes scaled together)
-
-| scale | h_bg [m] | el/λ_S | elements | A vs analytic | C vs A | C vs D | A vs finest |
-|---|---|---|---|---|---|---|---|
-| 2.0  | 0.250 | 6  | 23 128  | 6.9e-3 | 4.1e-4 | 4.0e-4 | 6.8e-3 |
-| 1.4  | 0.175 | 8.6 | 46 016  | 2.2e-3 | 1.5e-4 | 1.1e-4 | 2.0e-3 |
-| 1.0  | 0.125 | 12 | 88 470  | 9.5e-4 | 1.3e-4 | 3.8e-5 | 5.8e-4 |
-| 0.75 | 0.094 | 16 | 154 820 | 7.4e-4 | 1.4e-4 | 2.0e-5 | (ref) |
-| 0.6  | 0.075 | 20 | ~241 000 | skipped by memory guard — run on the large server |
-
-A converges at ≈ h^3.5 until it reaches the absorbing-layer floor; C vs A saturates at the
-ε-error (D vs A ≈ 1.5e-4) from 12 el/λ_S on; C vs D keeps decreasing.
-
-### Absorbing layers (ε/a = 0.01, scale 1)
-
-| layer | A vs analytic | A vs base A | C vs A |
-|---|---|---|---|
-| L = 4 m, ξ_max = 4, p = 2 (original repo setting) | 3.5e-2 | 3.5e-2 | 1.32e-4 |
-| L = 4 m, ξ_max = 1.5, p = 3 | 3.6e-3 | 3.0e-3 | 1.33e-4 |
-| **L = 6 m, ξ_max = 1.5, p = 3 (base)** | 9.5e-4 | — | 1.33e-4 |
-| L = 8 m, ξ_max = 1.5, p = 3 | 7.1e-4 | 4.2e-4 | 1.33e-4 |
-| L = 6 m, ξ_max = 0.75 | 2.4e-3 | 2.3e-3 | 1.33e-4 |
-| L = 6 m, ξ_max = 3.0 | 1.7e-3 | 9.6e-4 | 1.33e-4 |
-
-The steep original ramp reflected ≈3.5 % back into the box; the gentle cubic ramp brings
-the absolute error below 10⁻³. The **cloak metric is insensitive** (1.32–1.33e-4) because
-A, B and C share the same layer and its reflections.
-
-### Radial map
+### 5.4 Radial map
 
 | map | C vs A | D vs A | C vs D | interior |
 |---|---|---|---|---|
-| linear (base) | 1.33e-4 | 1.51e-4 | 3.8e-5 | 1.7e-4 |
-| quadratic (C2-ε, dr/dR(b) = 1) | 1.23e-4 | 1.51e-4 | 3.9e-5 | 1.4e-4 |
+| linear (base) | 6.68e-5 | 7.67e-5 | 1.18e-5 | 4.65e-5 |
+| quadratic (C2-ε, dr/dR(b) = 1) | 6.38e-5 | 7.67e-5 | 1.47e-5 | 4.30e-5 |
 
 Both maps give the same ideal-cloak performance (same virtual problem). The quadratic map
 removes the stiffness jump at r = b, which matters for symmetrised/pixelated designs (Step 2).
+
+### 5.5 Force direction and source position (‖u‖ error against A)
+
+| source | force | B: bare hole | C: cloak | D: ε-hole | C vs D | A vs analytic |
+|---|---|---|---|---|---|---|
+| (−3, −3), on y = x | vertical | 0.158 | 6.68e-5 | 7.67e-5 | 1.18e-5 | 5.00e-5 |
+| (−3, −3) | horizontal | 0.158 | 6.67e-5 | 7.67e-5 | 1.19e-5 | 5.06e-5 |
+| (−3, −3) | both | 0.104 | 3.36e-5 | 3.77e-5 | 5.12e-6 | 5.08e-5 |
+| (−3.5, −2), off-diagonal | vertical | 0.188 | 7.95e-5 | 9.13e-5 | 1.40e-5 | 4.90e-5 |
+| (−3.5, −2) | horizontal | 0.129 | 5.36e-5 | 6.13e-5 | 8.99e-6 | 4.97e-5 |
+| (−3.5, −2) | both | 0.111 | 4.02e-5 | 4.55e-5 | 6.24e-6 | 5.07e-5 |
+
+"both" is one source with direction (1, 1)/√2, in phase, with the same total force.
+
+* **Force direction.** The cloak works for every direction tested. At (−3.5, −2) the vertical
+  and horizontal problems are genuinely different (bare-hole error 0.188 vs 0.129), and C vs A
+  stays about 2400 times below B in both.
+* **Superposition.** The `both` solve equals (u_V + u_H)/√2 to 1.4e-14–9.0e-14 at (−3, −3) and
+  1.5e-14–5.7e-14 at (−3.5, −2) (complex error), confirming linearity to round-off. So `both`
+  carries no new field information beyond the two separate solves.
+* **Mirror check.** At (−3, −3) the source lies on y = x, and cavity, cloak and box are symmetric
+  about it, so in the continuum the horizontal field is the reflected vertical field. They agree
+  to 2.6e-4 (complex; the mesh is not symmetric), so **vertical and horizontal are not independent
+  tests at that position**.
+* **`both` scatters less at (−3, −3).** There the force points straight at the cloak. This is
+  expected to send mainly P waves (longer wavelength) towards it, though the P/S split at
+  the cloak was not measured.
+
+### 5.6 Not covered by Step 1
+
+One frequency only, and two source positions. All element sizes were scaled together, so
+refinement at r = a and quadrature order were not varied on their own. Case B has no independent
+analytic check (only A does). The PML has no dedicated unit test; it is validated by case A
+against the analytic solution.
 
 ## 6. Reproduce
 
@@ -205,10 +259,15 @@ python3 -m venv .venv
 .venv/bin/python -m pytest tests/test_circular_transform.py tests/test_ceff_nassar_eq25.py -q
 .venv/bin/python scripts/circular_step1.py --config configs/circular_embedded/step1.yaml --study all
 # or one at a time: --study base | eps | mesh | absorbing | map | summary
+.venv/bin/python scripts/circular_step1.py --config configs/circular_embedded/step1_offdiag.yaml --study base
 ```
 
-Outputs: `output/circular_step1/{base,eps/*,mesh/*,absorbing/*,map/*}/` (`case_{A,B,C,D}.npz`
-with mesh + complex field, `metrics.json`, `config.json`), `figures/`, `summary.md`.
+One force direction only: add `--polarization vertical | horizontal | both`
+(the list is `polarizations` in the YAML).
+
+Outputs: `output/circular_step1/<direction>/{base,eps/*,mesh/*,absorbing/*,map/*}/` (`case_{A,B,C,D}.npz`
+with mesh + complex field, `metrics.json`, `config.json`), `<direction>/figures/`, `<direction>/summary.md`, and the
+comparison `output/circular_step1/summary.md`.
 Each study point runs in a fresh subprocess and is reused if already solved with an identical
 config (`--force` re-solves).
 
