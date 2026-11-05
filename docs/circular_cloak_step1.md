@@ -241,9 +241,40 @@ removes the stiffness jump at r = b, which matters for symmetrised/pixelated des
   expected to send mainly P waves (longer wavelength) towards it, though the P/S split at
   the cloak was not measured.
 
-### 5.6 Not covered by Step 1
+### 5.6 Frequency sweep
 
-One frequency only, and two source positions. All element sizes were scaled together, so
+`docs/figures/circular_frequency_sweep/`: `frequency_sweep_ratio.png`, `frequency_sweep_error.png`,
+`summary.md`. Cases A, B, C for the three forces at both source positions, 25 frequencies,
+f* = b f / c_S from 0.1 to 2.5 (20 to 500 Hz), ε/a = 0.01 fixed. h_bg = min(0.094 m, λ_S/10): the base
+mesh up to f* = 1.6, then 10 elements/λ_S. Vertical and horizontal share one factorisation;
+`both` is their superposition. At f* = 1 the sweep reproduces the base-case values exactly.
+
+Ratio metric: ⟨‖u‖⟩/⟨‖u_ref‖⟩ over exterior points beyond the cloak, (x − c)·ŝ > b, with ŝ from
+source to centre. A is 1 by definition.
+
+| quantity over the whole sweep | value |
+|---|---|
+| C ratio, largest deviation from 1 | 1.5e-5 |
+| B ratio, range | 0.796 to 1.062 |
+| C vs A, L2 of ‖u‖, range across the six cases | about 2e-6 (f* = 0.1) to 3.2e-4 (f* = 2.5) |
+| B vs A, L2 of ‖u‖, at f* ≥ 0.4 | about 0.07 to 0.20 |
+| A vs analytic, L2 of ‖u‖, largest | 2.3e-4 |
+| A vs analytic, complex, largest | 2.7e-3 |
+
+* The cloak holds across the sweep. C vs A grows with frequency, since ε is fixed while the wavelength
+  shrinks. Above about f* = 1 it is similar in size to A vs analytic, so the sweep does not separate that
+  growth from mesh error; finer meshes would be needed.
+* **The ratio is a weak metric here.** B stays within about 20 % of 1, and even exceeds 1 at low frequency
+  for the `both` force (1.06 at f* = 0.4), although B vs A shows real scattering there. A mean of ‖u‖ can
+  hide scattering that moves energy around. Use the L2 figure as the main evidence.
+* At (−3, −3), vertical and horizontal coincide because of the mirror symmetry.
+* The x axis differs from the Rayleigh-wave plots in the paper's convention (f* = c_R/λ*): with
+  c_R ≈ 0.889 c_S, the value f* = 2.5 here corresponds to about 2.8 there. Going to 4 here needs the large
+  server: at 10 elements/λ_S it is roughly 430 000 elements.
+
+### 5.7 Not covered by Step 1
+
+Two source positions only, and frequencies only up to f* = 2.5. All element sizes were scaled together, so
 refinement at r = a and quadrature order were not varied on their own. Case B has no independent
 analytic check (only A does). The PML has no dedicated unit test; it is validated by case A
 against the analytic solution.

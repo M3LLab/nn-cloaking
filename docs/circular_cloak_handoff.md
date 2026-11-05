@@ -1,6 +1,6 @@
 # Circular cloak: project handoff
 
-Status as of 2026-11-05, branch `circular_cloak`. Written so that a person or another agent can
+Status as of 2026-11-06, branch `circular_cloak`. Written so that a person or another agent can
 continue the work, or draft a paper, from this file alone. Detailed derivations and all result
 tables are in [`circular_cloak_step1.md`](circular_cloak_step1.md).
 
@@ -69,6 +69,8 @@ Complex error for the vertical force at (−3, −3): B 0.312, C 1.30e-4.
 - **ε convergence:** the cloak error falls as ε² from 3.1e-2 at ε/a = 0.2 to 1.6e-5 at ε/a = 0.005.
 - **Layer:** the cloak error stays at 6.6–6.7e-5 across all absorbing layers, because A, B and C share them.
 - **Radial map:** linear 6.68e-5, quadratic 6.38e-5.
+- **Frequency sweep, f* = b f / c_S from 0.1 to 2.5:** C vs A (‖u‖) ranges from about 2e-6 to 3.2e-4, and B vs A reaches about
+  0.07 to 0.20 at f* ≥ 0.4. Figures: `docs/figures/circular_frequency_sweep/`.
 - **Case A vs analytic:** 5.0e-5 in ‖u‖ and 2.5e-4 complex at the base mesh.
 
 ## 5. Validation evidence
@@ -84,7 +86,9 @@ Complex error for the vertical force at (−3, −3): B 0.312, C 1.30e-4.
 
 ## 6. Limits and open questions
 
-- **One frequency only** (200 Hz, λ_S = b). No bandwidth claim is supported yet.
+- **Bandwidth tested only for f* = 0.1 to 2.5** (20 to 500 Hz, ε/a = 0.01). Above about f* = 1, C vs A is similar in size
+  to the mesh error of A vs analytic, so its growth with frequency is not yet separated from mesh error.
+- **The ⟨‖u‖⟩ ratio is weak:** it can stay near 1 despite real scattering. Use the L2 error as the main evidence.
 - **Two source positions.** At (−3, −3) vertical and horizontal are mirror images, so only (−3.5, −2)
   tests force direction independently.
 - **C vs D on fine meshes:** flattening near 1e-5 in ‖u‖ for the vertical force. It is not yet known
@@ -113,6 +117,7 @@ Complex error for the vertical force at (−3, −3): B 0.312, C 1.30e-4.
 | `rayleigh_cloak/embedded/run.py`, `plots.py` | cases A–D and metrics; figures |
 | `scripts/circular_step1.py` | driver for all studies |
 | `configs/circular_embedded/step1.yaml`, `step1_offdiag.yaml` | source at (−3, −3); source at (−3.5, −2) |
+| `scripts/circular_frequency_sweep.py`, `configs/circular_embedded/frequency_sweep.yaml` | frequency sweep; shares one factorisation per case |
 | `docs/figures/circular_step1*/` | committed figures and summary tables |
 
 `output/` is gitignored. Solved fields (`case_*.npz`) are not in the repository; the commands below
@@ -128,6 +133,7 @@ python3 -m venv .venv
 .venv/bin/python -m pytest tests/test_circular_transform.py tests/test_ceff_nassar_eq25.py -q
 .venv/bin/python scripts/circular_step1.py --config configs/circular_embedded/step1.yaml --study all
 .venv/bin/python scripts/circular_step1.py --config configs/circular_embedded/step1_offdiag.yaml --study base
+.venv/bin/python scripts/circular_frequency_sweep.py --config configs/circular_embedded/frequency_sweep.yaml
 ```
 
 - Options: `--study base|eps|mesh|absorbing|map|summary`, `--polarization vertical|horizontal|both`, `--force`.
@@ -176,6 +182,6 @@ Suggested outline: introduction; transformation and regularisation; numerical me
 (analytic case A, C vs D, superposition); cloaking results; sensitivity; pixelated and optimised cloaks once Step 2
 exists.
 
-Needed before submission: more than one frequency, the finer mesh levels, an independent check of case B, and a
+Needed before submission: the finer mesh levels, frequency results separated from mesh error, an independent check of case B, and a
 literature check. The references in the source paper were not independently reviewed for this work.
 Equations and tables should be re-derived from the code and data, not copied from this summary alone.

@@ -57,3 +57,41 @@ def solve_linear(problem, backend: str = "pardiso") -> tuple[np.ndarray, dict]:
     info = dict(n_dofs=int(n), nnz=int(A.nnz), t_assemble=t_asm, t_solve=t_solve,
                 rel_residual=rel_res, backend=backend, n_dirichlet=int(len(rows)))
     return u, info
+
+
+def solve_linear_directions(problem, directions) -> tuple[list[np.ndarray], dict]:
+    """Solve for several force directions with one factorisation.
+
+    The matrix does not depend on the force, so only the right-hand side changes.
+    Requires PARDISO. Returns one ``(n_nodes, vec)`` real array per direction.
+    """
+    import pypardiso
+
+    t0 = time.time()
+    fe = problem.fes[0]
+    n = problem.num_total_dofs_all_vars
+    sol0 = [np.zeros((f.num_total_nodes, f.vec)) for f in problem.fes]
+    problem.newton_update(sol0)
+    A = sp.csr_matrix((np.asarray(problem.V), (problem.I, problem.J)), shape=(n, n))
+    rows = np.concatenate([np.asarray(nodes) * fe.vec + np.asarray(comp)
+                           for nodes, comp in zip(fe.node_inds_list, fe.vec_inds_list)])
+    keep = np.ones(n)
+    keep[rows] = 0.0
+    A = (sp.diags(keep) @ A + sp.diags(1.0 - keep)).tocsr()
+    rhs = np.zeros((n, len(directions)))
+    for k, d in enumerate(directions):
+        problem.internal_vars[-1] = problem.force_field(d)
+        res = problem.compute_residual(sol0)
+        rhs[:, k] = -np.asarray(jax.flatten_util.ravel_pytree(res)[0], dtype=np.float64)
+    rhs[rows, :] = 0.0      # all Dirichlet values are zero
+    t_asm = time.time() - t0
+
+    t1 = time.time()
+    x = np.asarray(pypardiso.spsolve(A, rhs)).reshape(n, len(directions))
+    t_solve = time.time() - t1
+    rel = np.linalg.norm(A @ x - rhs, axis=0) / np.maximum(np.linalg.norm(rhs, axis=0), 1e-300)
+    pypardiso.ps.free_memory(everything=True)
+    if not np.all(np.isfinite(rel)) or rel.max() > 1e-6:
+        raise RuntimeError(f"linear solve inaccurate: relative residuals {rel}")
+    return ([x[:, k].reshape(-1, fe.vec) for k in range(len(directions))],
+            dict(n_dofs=int(n), t_assemble=t_asm, t_solve=t_solve, rel_residual=float(rel.max())))

@@ -127,6 +127,7 @@ class EmbeddedCloakProblem(Problem):
         g_int = float(jnp.sum(g * JxW))
         dvec = np.asarray(src.direction, dtype=float)
         dvec = dvec / np.linalg.norm(dvec)
+        self._force_profile = (src.amplitude / g_int) * g   # total force F0 for a unit direction
         f_qp = (src.amplitude / g_int) * g[..., None] * jnp.asarray(dvec)[None, None, :]
         self.source_stats = dict(
             discrete_integral=g_int,
@@ -135,6 +136,12 @@ class EmbeddedCloakProblem(Problem):
             total_force=[float(jnp.sum(f_qp[..., k] * JxW)) for k in range(2)],
         )
         self.internal_vars = [Cc_qp.real, Cc_qp.imag, rhoc_qp.real, rhoc_qp.imag, f_qp]
+
+    def force_field(self, direction):
+        """Body force at the quadrature points for a force along ``direction``."""
+        d = np.asarray(direction, dtype=float)
+        d = d / np.linalg.norm(d)
+        return self._force_profile[..., None] * jnp.asarray(d)[None, None, :]
 
     def get_tensor_map(self):
         def stress(u_grad, CR, CI, _rR, _rI, _f):
