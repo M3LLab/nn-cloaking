@@ -1,0 +1,50 @@
+[
+ {
+  "f_star": 1.0,
+  "source": "on_diagonal",
+  "force": "vertical",
+  "e": 0.09610070830896902,
+  "e_c": 0.19190836275808595,
+  "active_pixels": 500
+ },
+ {
+  "f_star": 1.0,
+  "source": "on_diagonal",
+  "force": "horizontal",
+  "e": 0.11925020367005394,
+  "e_c": 0.23844373363876856,
+  "active_pixels": 500
+ },
+ {
+  "f_star": 1.0,
+  "source": "on_diagonal",
+  "force": "both",
+  "e": 0.04689596424067617,
+  "e_c": 0.11561826058291864,
+  "active_pixels": 500
+ },
+ {
+  "f_star": 1.0,
+  "source": "off_diagonal",
+  "force": "vertical",
+  "e": 0.005914843332074359,
+  "e_c": 0.01160114211889293,
+  "active_pixels": 500
+ },
+ {
+  "f_star": 1.0,
+  "source": "off_diagonal",
+  "force": "horizontal",
+  "e": 0.006141023206029334,
+  "e_c": 0.011312262529650277,
+  "active_pixels": 500
+ },
+ {
+  "f_star": 1.0,
+  "source": "off_diagonal",
+  "force": "both",
+  "e": 0.005616413937129153,
+  "e_c": 0.011891700678291815,
+  "active_pixels": 500
+ }
+]

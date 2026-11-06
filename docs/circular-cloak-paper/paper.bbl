@@ -1,0 +1,136 @@
+\begin{thebibliography}{14}
+\expandafter\ifx\csname natexlab\endcsname\relax\def\natexlab#1{#1}\fi
+\providecommand{\url}[1]{\texttt{#1}}
+\providecommand{\href}[2]{#2}
+\providecommand{\path}[1]{#1}
+\providecommand{\DOIprefix}{doi:}
+\providecommand{\ArXivprefix}{arXiv:}
+\providecommand{\URLprefix}{URL: }
+\providecommand{\Pubmedprefix}{pmid:}
+\providecommand{\doi}[1]{\href{http://dx.doi.org/#1}{\path{#1}}}
+\providecommand{\Pubmed}[1]{\href{pmid:#1}{\path{#1}}}
+\providecommand{\bibinfo}[2]{#2}
+\ifx\xfnm\relax \def\xfnm[#1]{\unskip,\space#1}\fi
+%Type = Article
+\bibitem[{Pendry et~al.(2006)Pendry, Schurig, and Smith}]{pendry2006}
+\bibinfo{author}{J.~B. Pendry}, \bibinfo{author}{D.~Schurig},
+  \bibinfo{author}{D.~R. Smith},
+\newblock \bibinfo{title}{Controlling electromagnetic fields},
+\newblock \bibinfo{journal}{Science} \bibinfo{volume}{312}
+  (\bibinfo{year}{2006}) \bibinfo{pages}{1780--1782}.
+  \DOIprefix\doi{10.1126/science.1125907}.
+%Type = Article
+\bibitem[{Milton et~al.(2006)Milton, Briane, and Willis}]{milton2006}
+\bibinfo{author}{G.~W. Milton}, \bibinfo{author}{M.~Briane},
+  \bibinfo{author}{J.~R. Willis},
+\newblock \bibinfo{title}{On cloaking for elasticity and physical equations
+  with a transformation invariant form},
+\newblock \bibinfo{journal}{New J. Phys.} \bibinfo{volume}{8}
+  (\bibinfo{year}{2006}) \bibinfo{pages}{248}.
+  \DOIprefix\doi{10.1088/1367-2630/8/10/248}.
+%Type = Article
+\bibitem[{Norris and Shuvalov(2011)}]{norris2011}
+\bibinfo{author}{A.~N. Norris}, \bibinfo{author}{A.~L. Shuvalov},
+\newblock \bibinfo{title}{Elastic cloaking theory},
+\newblock \bibinfo{journal}{Wave Motion} \bibinfo{volume}{48}
+  (\bibinfo{year}{2011}) \bibinfo{pages}{525--538}.
+  \DOIprefix\doi{10.1016/j.wavemoti.2011.03.002}.
+%Type = Article
+\bibitem[{Brun et~al.(2009)Brun, Guenneau, and Movchan}]{brun2009}
+\bibinfo{author}{M.~Brun}, \bibinfo{author}{S.~Guenneau},
+  \bibinfo{author}{A.~B. Movchan},
+\newblock \bibinfo{title}{Achieving control of in-plane elastic waves},
+\newblock \bibinfo{journal}{Appl. Phys. Lett.} \bibinfo{volume}{94}
+  (\bibinfo{year}{2009}) \bibinfo{pages}{061903}.
+  \DOIprefix\doi{10.1063/1.3068491}.
+%Type = Article
+\bibitem[{Nassar et~al.(2018)Nassar, Chen, and Huang}]{nassar2018}
+\bibinfo{author}{H.~Nassar}, \bibinfo{author}{Y.~Y. Chen},
+  \bibinfo{author}{G.~L. Huang},
+\newblock \bibinfo{title}{A degenerate polar lattice for cloaking in full
+  two-dimensional elastodynamics and statics},
+\newblock \bibinfo{journal}{Proc. R. Soc. A} \bibinfo{volume}{474}
+  (\bibinfo{year}{2018}) \bibinfo{pages}{20180523}.
+  \DOIprefix\doi{10.1098/rspa.2018.0523}.
+%Type = Article
+\bibitem[{Chatzopoulos et~al.(2023)Chatzopoulos, Palermo, Diatta, Guenneau, and
+  Marzani}]{chatzopoulos2023}
+\bibinfo{author}{Z.~Chatzopoulos}, \bibinfo{author}{A.~Palermo},
+  \bibinfo{author}{A.~Diatta}, \bibinfo{author}{S.~Guenneau},
+  \bibinfo{author}{A.~Marzani},
+\newblock \bibinfo{title}{Cloaking {Rayleigh} waves via symmetrized elastic
+  tensors},
+\newblock \bibinfo{journal}{Int. J. Eng. Sci.} \bibinfo{volume}{191}
+  (\bibinfo{year}{2023}) \bibinfo{pages}{103899}.
+  \DOIprefix\doi{10.1016/j.ijengsci.2023.103899}.
+%Type = Article
+\bibitem[{Brun and Guenneau(2023)}]{brun2023}
+\bibinfo{author}{M.~Brun}, \bibinfo{author}{S.~Guenneau},
+\newblock \bibinfo{title}{Transformation design of in-plane elastic cylindrical
+  cloaks, concentrators and lenses},
+\newblock \bibinfo{journal}{Wave Motion} \bibinfo{volume}{119}
+  (\bibinfo{year}{2023}) \bibinfo{pages}{103124}.
+  \DOIprefix\doi{10.1016/j.wavemoti.2023.103124}.
+%Type = Article
+\bibitem[{Kohn et~al.(2008)Kohn, Shen, Vogelius, and Weinstein}]{kohn2008}
+\bibinfo{author}{R.~V. Kohn}, \bibinfo{author}{H.~Shen}, \bibinfo{author}{M.~S.
+  Vogelius}, \bibinfo{author}{M.~I. Weinstein},
+\newblock \bibinfo{title}{Cloaking via change of variables in electric
+  impedance tomography},
+\newblock \bibinfo{journal}{Inverse Probl.} \bibinfo{volume}{24}
+  (\bibinfo{year}{2008}) \bibinfo{pages}{015016}.
+%Type = Article
+\bibitem[{Kohn et~al.(2014)Kohn, Lu, Schweizer, and Weinstein}]{kohn2014}
+\bibinfo{author}{R.~V. Kohn}, \bibinfo{author}{J.~Lu},
+  \bibinfo{author}{B.~Schweizer}, \bibinfo{author}{M.~I. Weinstein},
+\newblock \bibinfo{title}{A variational perspective on cloaking by anomalous
+  localized resonance},
+\newblock \bibinfo{journal}{Commun. Math. Phys.} \bibinfo{volume}{328}
+  (\bibinfo{year}{2014}) \bibinfo{pages}{1--27}.
+  \DOIprefix\doi{10.1007/s00220-014-1943-y}.
+%Type = Article
+\bibitem[{Berenger(1994)}]{berenger1994}
+\bibinfo{author}{J.-P. Berenger},
+\newblock \bibinfo{title}{A perfectly matched layer for the absorption of
+  electromagnetic waves},
+\newblock \bibinfo{journal}{J. Comput. Phys.} \bibinfo{volume}{114}
+  (\bibinfo{year}{1994}) \bibinfo{pages}{185--200}.
+%Type = Article
+\bibitem[{Chew and Weedon(1994)}]{chew1994}
+\bibinfo{author}{W.~C. Chew}, \bibinfo{author}{W.~H. Weedon},
+\newblock \bibinfo{title}{A {3D} perfectly matched medium from modified
+  {Maxwell's} equations with stretched coordinates},
+\newblock \bibinfo{journal}{Microw. Opt. Technol. Lett.} \bibinfo{volume}{7}
+  (\bibinfo{year}{1994}) \bibinfo{pages}{599--604}.
+  \DOIprefix\doi{10.1002/mop.4650071304}.
+%Type = Article
+\bibitem[{Basu and Chopra(2003)}]{basu2003}
+\bibinfo{author}{U.~Basu}, \bibinfo{author}{A.~K. Chopra},
+\newblock \bibinfo{title}{Perfectly matched layers for time-harmonic
+  elastodynamics of unbounded domains: theory and finite-element
+  implementation},
+\newblock \bibinfo{journal}{Comput. Methods Appl. Mech. Eng.}
+  \bibinfo{volume}{192} (\bibinfo{year}{2003}) \bibinfo{pages}{1337--1375}.
+  \DOIprefix\doi{10.1016/S0045-7825(02)00642-4}.
+%Type = Article
+\bibitem[{Xue et~al.(2023)Xue, Liao, Gan, Park, Xie, Liu, and
+  Cao}]{xu2020jaxfem}
+\bibinfo{author}{T.~Xue}, \bibinfo{author}{S.~Liao}, \bibinfo{author}{Z.~Gan},
+  \bibinfo{author}{C.~Park}, \bibinfo{author}{X.~Xie}, \bibinfo{author}{W.~K.
+  Liu}, \bibinfo{author}{J.~Cao},
+\newblock \bibinfo{title}{{JAX-FEM}: A differentiable {GPU}-accelerated 3{D}
+  finite element solver for automatic inverse design and mechanistic data
+  science},
+\newblock \bibinfo{journal}{Comput. Phys. Commun.} \bibinfo{volume}{291}
+  (\bibinfo{year}{2023}) \bibinfo{pages}{108802}.
+  \DOIprefix\doi{10.1016/j.cpc.2023.108802}.
+%Type = Article
+\bibitem[{Geuzaine and Remacle(2009)}]{geuzaine2009}
+\bibinfo{author}{C.~Geuzaine}, \bibinfo{author}{J.-F. Remacle},
+\newblock \bibinfo{title}{Gmsh: A 3-{D} finite element mesh generator with
+  built-in pre- and post-processing facilities},
+\newblock \bibinfo{journal}{Int. J. Numer. Methods Eng.} \bibinfo{volume}{79}
+  (\bibinfo{year}{2009}) \bibinfo{pages}{1309--1331}.
+  \DOIprefix\doi{10.1002/nme.2579}.
+
+\end{thebibliography}

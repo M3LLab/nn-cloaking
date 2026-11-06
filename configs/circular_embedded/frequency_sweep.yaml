@@ -12,3 +12,5 @@ min_elems_per_wavelength: 10
 sources:
   on_diagonal: [-3.0, -3.0]
   off_diagonal: [-3.5, -2.0]
+# Frequencies shown side by side in the overview figures
+overview_f_star: [0.4, 1.0, 1.5, 2.0, 2.5]

@@ -10,7 +10,7 @@ tables are in [`circular_cloak_step1.md`](circular_cloak_step1.md).
 |---|---|
 | Step 1: continuous regularised ideal cloak | done locally, awaiting final approval |
 | Finest mesh level (scale 0.6, 225k elements) | not run: exceeds the memory guard on the 31 GB workstation |
-| Step 2: pixelated cloak and optimisation | **plan only; do not start before the Step 1 review is approved** |
+| Step 2: pixelated cloak and optimisation | started: baselines and a one-source pilot done locally (section 12); full training planned for the H100 server |
 | Microstructure realisation | later stage, out of scope |
 
 ## 2. Goal and problem
@@ -70,7 +70,7 @@ Complex error for the vertical force at (−3, −3): B 0.312, C 1.30e-4.
 - **Layer:** the cloak error stays at 6.6–6.7e-5 across all absorbing layers, because A, B and C share them.
 - **Radial map:** linear 6.68e-5, quadratic 6.38e-5.
 - **Frequency sweep, f* = b f / c_S from 0.1 to 2.5:** C vs A (‖u‖) ranges from about 2e-6 to 3.2e-4, and B vs A reaches about
-  0.07 to 0.20 at f* ≥ 0.4. Figures: `docs/figures/circular_frequency_sweep/`.
+  0.07 to 0.20 at f* ≥ 0.4. Figures: `docs/figures/circular_frequency_sweep/`. The sweep saves its fields in `output/`, so new plots need no new solve (`--plots-only`).
 - **Case A vs analytic:** 5.0e-5 in ‖u‖ and 2.5e-4 complex at the base mesh.
 
 ## 5. Validation evidence
@@ -118,6 +118,7 @@ Complex error for the vertical force at (−3, −3): B 0.312, C 1.30e-4.
 | `scripts/circular_step1.py` | driver for all studies |
 | `configs/circular_embedded/step1.yaml`, `step1_offdiag.yaml` | source at (−3, −3); source at (−3.5, −2) |
 | `scripts/circular_frequency_sweep.py`, `configs/circular_embedded/frequency_sweep.yaml` | frequency sweep; shares one factorisation per case |
+| `scripts/circular_ratio_diagnostic.py` | decomposition behind the ratio exceeding 1 |
 | `docs/figures/circular_step1*/` | committed figures and summary tables |
 
 `output/` is gitignored. Solved fields (`case_*.npz`) are not in the repository; the commands below
@@ -156,8 +157,8 @@ python3 -m venv .venv
 
 ## 10. Next steps
 
-1. On the large server, run the mesh study at scales 0.6, 0.5 and 0.35 (edit `studies.mesh.values`) to settle
-   the C vs D question.
+1. Finer meshes for the ideal cloak are **not** needed (decided 2026-11-06). The flattening of C vs D near 1e-5 stays an
+   open note, not a task.
 2. Optional before Step 2: other frequencies; refinement at r = a and quadrature on their own.
 3. After approval, Step 2 as planned in section 7 of `circular_cloak_step1.md`: about 500 **active** pixels (not a
    500 × 500 grid); sample the ideal tensor first to measure pixelisation error alone; then neural-field
@@ -168,7 +169,43 @@ python3 -m venv .venv
 For Step 2, include both force directions in the loss, because a design tuned to one force may not hold for another.
 One factorisation can serve both right-hand sides.
 
+## 12. Step 2 status
+
+Code: `embedded/pixels.py` (polar pixels, independent of the mesh), `embedded/adjoint.py` (one factorisation; the adjoint uses
+K^T = S K S, and `LinearBackend` is where a GPU solver such as cuDSS would go), `embedded/neural_field.py` (admissible Cauchy
+material by Cholesky factor; reuses the MLP and Adam of the old pipeline), `embedded/optimize_pixels.py`, `scripts/circular_pixel_baseline.py`,
+`scripts/circular_optimize.py` (checkpoints and resumes), `configs/circular_embedded/step2.yaml`, `tests/test_circular_adjoint.py`.
+Results: `docs/figures/circular_step2/`.
+
+Gradient: matches central finite differences within 1e-5 relative (complex and magnitude losses) and JAX-FEM reverse mode.
+
+Baselines at f* = 1, eps/a = 0.01, worst ‖u‖ error over the six source and force cases (bare hole 0.188, continuous cloak 8e-5):
+
+| material, 500 pixels | linear | quadratic |
+|---|---|---|
+| ideal, centre sampling | 4.2e-3 | 1.6e-2 |
+| ideal, cell average | 1.3e-2 | 3.2e-2 |
+| symmetrised, cell average | 0.222 | 0.202 |
+| symmetrised continuous (no pixels) | 0.222 | 0.200 |
+
+Symmetrising costs far more than pixels, and leaves the cloak no better than the bare hole at this frequency.
+
+Pilot: 500 pixels, quadratic map, f* = 1, trained on source (-3.5, -2) with both forces, complex loss, 150 Adam steps at about 7 s each, CPU.
+
+| source | vertical | horizontal | both |
+|---|---|---|---|
+| (-3.5, -2), trained | 5.9e-3 | 6.1e-3 | 5.6e-3 |
+| (-3, -3), not trained | 9.6e-2 | 0.119 | 4.7e-2 |
+
+The trained source improves about 30 times from the symmetrised start (0.202), and was still improving at step 150. **The unseen source improves much less (0.159 to about 0.10): the design is tuned to its training source.** Held-out exterior points do not reveal this,
+as they come from the same field. So future training needs several sources in the loss, and validation must use an unseen source.
+
+For the H100: PARDISO runs on the CPU, so the GPU only helps JAX work until a GPU solver is added behind `LinearBackend`; multi-case training is
+sequential for now.
+
 ## 11. Paper material
+
+The draft is `docs/circular-cloak-paper/paper.tex` (Wave Motion template, `./build.sh`; tables come from `make_tables.py`). Authors, CRediT and funding are still to be confirmed.
 
 The results support these statements, for the tested conditions only:
 

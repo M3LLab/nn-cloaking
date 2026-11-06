@@ -1,0 +1,25 @@
+# Step 2: pixelated cloak. Baselines without optimisation, then neural-field optimisation.
+#   .venv/bin/python scripts/circular_pixel_baseline.py --config configs/circular_embedded/step2.yaml
+#   .venv/bin/python scripts/circular_optimize.py --config configs/circular_embedded/step2.yaml
+base_config: configs/circular_embedded/step1.yaml
+output_dir: output/circular_step2
+sources:
+  on_diagonal: [-3.0, -3.0]
+  off_diagonal: [-3.5, -2.0]
+baseline:
+  maps: [linear, quadratic]
+  methods: [average, centre]     # how pixel values sample the ideal material
+  # (n_theta, n_r), so the pixel count is their product
+  grids: [[50, 10], [36, 7], [24, 5], [15, 4]]
+optimize:
+  radial_map: quadratic
+  grid: [50, 10]
+  f_star: [1.0]                  # training frequencies; a band belongs on the large server
+  train_sources: [off_diagonal]  # the other source is held out for validation
+  loss: complex                  # complex | magnitude
+  train_fraction: 0.5            # of exterior points; the rest are held out
+  steps: 150
+  lr: 0.002
+  checkpoint_every: 10
+  backend: pardiso
+  network: {hidden: 128, layers: 3, n_theta_modes: 8, n_r_modes: 4, seed: 0, output_scale: 0.1}

@@ -50,10 +50,26 @@ def _gib(x: float) -> str:
     return f"{x / 2**30:.2f} GiB"
 
 
+def release_memory() -> None:
+    """Hand memory from finished solves back to the OS so the check doesn't count it as used."""
+    gc.collect()
+    try:
+        import jax
+        jax.clear_caches()
+        gc.collect()
+    except ImportError:
+        pass
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
 def check(need_bytes: float, what: str, verbose: bool = True) -> None:
     """Raise :class:`InsufficientMemory` if ``need_bytes`` (x SAFETY) plus the
     reserve exceeds the currently available RAM."""
-    gc.collect()
+    release_memory()
     avail = available_bytes()
     need = need_bytes * SAFETY
     if verbose:
@@ -94,5 +110,7 @@ def check_mesh(cfg, sizes: dict, hole_radius: float) -> int:
     return n
 
 
-def check_solve(n_cells: int, ele_type: str, what: str = "assembly + solve") -> None:
-    check(n_cells * BYTES_PER_CELL.get(ele_type, 60_000), f"{what} ({n_cells} elements)")
+def check_solve(n_cells: int, ele_type: str, what: str = "assembly + solve",
+                bytes_per_cell: float | None = None) -> None:
+    per_cell = bytes_per_cell if bytes_per_cell is not None else BYTES_PER_CELL.get(ele_type, 60_000)
+    check(n_cells * per_cell, f"{what} ({n_cells} elements)")
