@@ -94,8 +94,12 @@ def build_mesh(
     hole_is_eps: bool = False,
     msh_path: str | None = None,
     verbose: bool = True,
+    extra_sources: list | None = None,
 ) -> TaggedMesh:
     """Build the tagged mesh. ``hole_radius`` defaults to the cavity radius a.
+
+    ``extra_sources`` lists further (x, y) points to refine around, so that one mesh, and
+    therefore one factorisation, can serve many source positions.
 
     ``hole_is_eps=True`` builds the mesh for the *virtual* problem (case D):
     inner circle at r = eps, refined to resolve that small hole.
@@ -167,18 +171,21 @@ def build_mesh(
         f.setNumber(f_in, "StopAtDistMax", 1)   # local field: no effect beyond DistMax
 
         # source refinement
-        f_ds = f.add("MathEval")
-        f.setString(f_ds, "F", f"Sqrt((x-({src.x}))^2+(y-({src.y}))^2)")
-        f_s = f.add("Threshold")
-        f.setNumber(f_s, "InField", f_ds)
-        f.setNumber(f_s, "SizeMin", sz["h_src"])
-        f.setNumber(f_s, "SizeMax", sz["h_bg"])
-        f.setNumber(f_s, "DistMin", 4 * src.sigma)
-        f.setNumber(f_s, "DistMax", 4 * src.sigma + 10 * sz["h_src"] + 2 * sz["h_bg"])
-        f.setNumber(f_s, "StopAtDistMax", 1)
+        src_fields = []
+        for sx, sy in [(src.x, src.y)] + [tuple(p) for p in (extra_sources or [])]:
+            f_ds = f.add("MathEval")
+            f.setString(f_ds, "F", f"Sqrt((x-({sx}))^2+(y-({sy}))^2)")
+            f_s = f.add("Threshold")
+            f.setNumber(f_s, "InField", f_ds)
+            f.setNumber(f_s, "SizeMin", sz["h_src"])
+            f.setNumber(f_s, "SizeMax", sz["h_bg"])
+            f.setNumber(f_s, "DistMin", 4 * src.sigma)
+            f.setNumber(f_s, "DistMax", 4 * src.sigma + 10 * sz["h_src"] + 2 * sz["h_bg"])
+            f.setNumber(f_s, "StopAtDistMax", 1)
+            src_fields.append(f_s)
 
         f_min = f.add("Min")
-        f.setNumbers(f_min, "FieldsList", [f_cl, f_in, f_s])
+        f.setNumbers(f_min, "FieldsList", [f_cl, f_in] + src_fields)
         f.setAsBackgroundMesh(f_min)
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)

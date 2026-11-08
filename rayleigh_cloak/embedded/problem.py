@@ -99,6 +99,7 @@ class EmbeddedCloakProblem(Problem):
         cfg = spec.cfg
         mat, src = cfg.material, cfg.source
         self._omega = cfg.omega
+        self._cfg = cfg
         qp = jnp.asarray(self.physical_quad_points)            # (nc, nq, 2)
         nc, nq, _ = qp.shape
 
@@ -136,6 +137,16 @@ class EmbeddedCloakProblem(Problem):
             total_force=[float(jnp.sum(f_qp[..., k] * JxW)) for k in range(2)],
         )
         self.internal_vars = [Cc_qp.real, Cc_qp.imag, rhoc_qp.real, rhoc_qp.imag, f_qp]
+
+    def force_field_at(self, xy, direction):
+        """Body force for a Gaussian source at ``xy``, with total force F0 along ``direction``."""
+        cfg = self._cfg
+        qp = jnp.asarray(self.physical_quad_points)
+        g = jnp.exp(-0.5 * ((qp[..., 0] - xy[0]) ** 2 + (qp[..., 1] - xy[1]) ** 2) / cfg.source.sigma ** 2)
+        amp = cfg.source.amplitude / jnp.sum(g * jnp.asarray(self.fes[0].JxW))
+        d = np.asarray(direction, dtype=float)
+        d = d / np.linalg.norm(d)
+        return (amp * g)[..., None] * jnp.asarray(d)[None, None, :]
 
     def force_field(self, direction):
         """Body force at the quadrature points for a force along ``direction``."""

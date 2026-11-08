@@ -203,6 +203,24 @@ as they come from the same field. So future training needs several sources in th
 For the H100: PARDISO runs on the CPU, so the GPU only helps JAX work until a GPU solver is added behind `LinearBackend`; multi-case training is
 sequential for now.
 
+### Multi-source and broadband runs (2026-11-06 to 2026-11-08)
+
+One mesh is refined around every source, so one factorisation per frequency serves all sources and forces
+(`FrequencyCase`). Sources are split into train (8, ring r = 3.5 m), validation (4, selects the best design)
+and test (4, including the two Step 1 sources, never used for any decision). `BandCase` switches frequency on one
+problem by rescaling density and recomputing the PML, so a pool of frequencies costs one factorisation per drawn
+frequency. All gradient tests pass (`tests/test_circular_adjoint.py`, 8 tests).
+
+Full table: `docs/figures/circular_step2/optimisation_results.md`; histories in `docs/figures/circular_step2/runs/`.
+
+- f* = 1, 500 pixels: test median 0.042 against the bare hole's 0.158 at f* = 1; quadratic beats linear (0.049).
+- Pixel count at f* = 1: 0.042 (500), 0.057 (252), 0.065 (120), 0.099 (60).
+- Single-frequency designs are worse than the bare hole at f* = 1.5 and 2.
+- Three fixed training frequencies leave gaps between them; a pool of 11 frequencies in [0.5, 1.5], 2 per step,
+  removes them: test median 0.073 to 0.119 across the band against 0.138 to 0.168 for the bare hole, but 0.174 at
+  f* = 1.75 outside it.
+- Every run except 60 pixels was still improving when stopped. The pool run takes about 40 s per step locally.
+
 ## 11. Paper material
 
 The draft is `docs/circular-cloak-paper/paper.tex` (Wave Motion template, `./build.sh`; tables come from `make_tables.py`). Authors, CRediT and funding are still to be confirmed.
