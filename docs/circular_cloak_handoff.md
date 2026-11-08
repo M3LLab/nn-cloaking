@@ -221,6 +221,34 @@ Full table: `docs/figures/circular_step2/optimisation_results.md`; histories in 
   f* = 1.75 outside it.
 - Every run except 60 pixels was still improving when stopped. The pool run takes about 40 s per step locally.
 
+### Running on the H100 server
+
+Changes for speed (2026-11-08):
+- `embedded/fast_assembly.py`: the matrix outside the cloak is assembled once per frequency and cached; each step adds
+  only the annulus element matrices. `tests/test_circular_fast_assembly.py` checks it against full jax-fem assembly.
+- All adjoint right-hand sides are solved together, and the gradient is one batched JAX call.
+- `CuDSSBackend` in `embedded/adjoint.py` (cuDSS via nvmath-python, the same calls as `rayleigh_cloak_3d/cudss_solver.py`):
+  one plan, then values updated in place and refactorised each step. **It has not run anywhere yet** (no GPU here).
+- Each line of `history.jsonl` has a `timing` entry per phase (assemble, factorize, solve, loss, adjoint, sensitivity).
+
+Measured here on a 27k-element mesh while another run used the CPU: assembly fell from about 0.9 s to below 0.1 s
+per frequency, but the step stayed about 5-7 s because factorisation and solves dominate. So the GPU solver is the main gain.
+
+Setup and first run on the server:
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install "jax[cuda12]==0.8.0" "jax-fem==0.0.11" "fenics-basix>=0.10.0" "gmsh==4.14.0" "meshio==5.3.5" \
+    "pydantic==2.13.2" PyYAML numpy scipy matplotlib pypardiso pyfiglet pytest cupy-cuda12x "nvmath-python[cu12]"
+python -m pytest tests/test_circular_transform.py tests/test_circular_fast_assembly.py tests/test_circular_adjoint.py -q
+python scripts/benchmark_step.py --backend cudss --compare --scale 1.0     # must print "[compare] OK"
+```
+
+Only train with `backend: cudss` (in `configs/circular_embedded/step2.yaml`) after `--compare` reports OK: it checks the
+loss and both gradients against PARDISO, which also re-checks the sign-flip adjoint on the GPU. If it fails, train with
+`backend: pardiso` on the server's CPUs; the fast assembly still helps there. To continue a local run there, copy its
+folder `output/circular_step2/optimize/<run>/` and run the same command; it resumes from `checkpoint.pkl`.
+
 ## 11. Paper material
 
 The draft is `docs/circular-cloak-paper/paper.tex` (Wave Motion template, `./build.sh`; tables come from `make_tables.py`). Authors, CRediT and funding are still to be confirmed.

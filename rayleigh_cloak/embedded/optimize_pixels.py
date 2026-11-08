@@ -16,9 +16,12 @@ import numpy as np
 import scipy.sparse as sp
 
 from rayleigh_cloak.embedded import memguard
+import time
+
 from rayleigh_cloak.embedded.adjoint import (
-    SensitivityData, adjoint_solve, assemble, make_backend, material_sensitivity,
+    SensitivityData, adjoint_solve, assemble, make_backend, material_sensitivity_batch,
 )
+from rayleigh_cloak.embedded.fast_assembly import FastAssembler
 from rayleigh_cloak.embedded.mesh import build_mesh
 from rayleigh_cloak.embedded.pixels import PixelProblem
 from rayleigh_cloak.embedded.problem import build_problem, layer_coefficients
@@ -27,6 +30,13 @@ from rayleigh_cloak.embedded.sampling import PointEvaluator, magnitude, rel_l2, 
 
 FORCES = {"vertical": (0.0, 1.0), "horizontal": (1.0, 0.0)}
 SOLVE_BYTES_PER_CELL = 70_000
+
+
+class _Shape:
+    """Size and Dirichlet rows of an assembled system (what callers need from it)."""
+
+    def __init__(self, n, rows):
+        self.n, self.rows = n, rows
 
 
 def evaluation_matrix(ev: PointEvaluator, n_nodes: int) -> sp.csr_matrix:
@@ -49,7 +59,7 @@ def candidate_points(cfg) -> np.ndarray:
 
 class FrequencyCase:
     def __init__(self, cfg, grid, sources: dict, loss="complex", train_fraction=0.5, seed=0,
-                 backend="pardiso", msh_path=None):
+                 backend="pardiso", msh_path=None, fast=True, cache_rest=True):
         """``sources`` maps a group name to a list of (x, y); ``cfg.source`` is only used for its width."""
         self.cfg, self.loss, self.grid = cfg, loss, grid
         self.n_pix = grid.n_pixels
@@ -87,6 +97,33 @@ class FrequencyCase:
         self.rhs = None
         self.rows = None
         self.idx = {g: [k for k, it in enumerate(self.items) if it[0] == g] for g in sources}
+        self.fast = fast
+        self.cache_rest = cache_rest
+        self._rest = {}
+        self.timing = {}
+        if fast:
+            self.asm_fast = FastAssembler(self.pp, self.sd)
+            self.rows = self.asm_fast.bc_rows
+
+    def _tick(self, name, t0):
+        self.timing[name] = self.timing.get(name, 0.0) + time.perf_counter() - t0
+        return time.perf_counter()
+
+    def _rest_key(self):
+        return getattr(self, "current", None)
+
+    def _rest_data(self):
+        key = self._rest_key()
+        if key in self._rest:
+            return self._rest[key]
+        data = self.asm_fast.rest_data()
+        if self.cache_rest:
+            try:   # cache per frequency only while it fits; otherwise recompute on demand
+                memguard.check(data.size * 8 * 2, "cache of the fixed matrix part", verbose=False)
+                self._rest[key] = data
+            except memguard.InsufficientMemory:
+                self.cache_rest = False
+        return data
 
     def _reference(self, pr, evA, bA=None):
         """Case A at the current frequency, for all right-hand sides, on the same exterior mesh."""
@@ -132,19 +169,36 @@ class FrequencyCase:
         raise ValueError(f"unknown loss {self.loss!r}")
 
     def _factorize(self, C_pix, rho_pix):
-        self.pp.set_pixels(C_pix, self._rho_scale * rho_pix)
-        asm = assemble(self.pp.problem)
+        t0 = time.perf_counter()
+        if not self.fast:
+            self.pp.set_pixels(C_pix, self._rho_scale * rho_pix)
+            asm = assemble(self.pp.problem)
+            if self.rhs is None:
+                self.rows = asm.rows
+                self.rhs = self._rhs(self.pp.problem, asm)
+            t0 = self._tick("assemble", t0)
+            self.backend.factorize(asm.A)
+            self._tick("factorize", t0)
+            return asm
+        fa = self.asm_fast
         if self.rhs is None:
-            self.rows = asm.rows
-            self.rhs = self._rhs(self.pp.problem, asm)
-        self.backend.factorize(asm.A)
-        return asm
+            self.rhs = self._rhs(self.pp.problem, _Shape(fa.n, fa.bc_rows))
+        rest = self._rest_data()
+        idx = self.qp_pix.reshape(len(self.pp.sel), self.pp.nq)
+        data = fa.data(rest, jnp.asarray(C_pix)[idx], self._rho_scale * jnp.asarray(rho_pix)[idx])
+        t0 = self._tick("assemble", t0)
+        self.backend.factorize_csr(fa.indptr, fa.indices, data, fa.n)
+        self._tick("factorize", t0)
+        return _Shape(fa.n, fa.bc_rows)
 
     def _solve_group(self, asm, indices):
-        x = self.backend.solve(self.rhs[:, indices]).reshape(asm.n, len(indices))
-        res = np.linalg.norm(asm.A @ x - self.rhs[:, indices], axis=0) / np.linalg.norm(self.rhs[:, indices], axis=0)
+        t0 = time.perf_counter()
+        b = self.rhs[:, indices]
+        x = self.backend.solve(b).reshape(asm.n, len(indices))
+        res = self.backend.residual(x, b)
         if not np.all(res < 1e-6):
             raise RuntimeError(f"inaccurate solve: relative residuals up to {res.max():.2e}")
+        self._tick("solve", t0)
         return x
 
     def step(self, C_pix, rho_pix, groups=("val",)):
@@ -152,21 +206,24 @@ class FrequencyCase:
         asm = self._factorize(C_pix, rho_pix)
         tr = self.idx["train"]
         x = self._solve_group(asm, tr)
+        t0 = time.perf_counter()
         J, H = 0.0, 0.0
-        gC = jnp.zeros((self.n_pix, 2, 2, 2, 2))
-        gr = jnp.zeros(self.n_pix)
+        G = np.zeros((asm.n, len(tr)))
         for j, k in enumerate(tr):
             group, i, *_ = self.items[k]
-            u4 = x[:, j].reshape(-1, 4)
-            U = self._values(self.ev, u4)
+            U = self._values(self.ev, x[:, j].reshape(-1, 4))
             Jk, gre, gim = self._loss_terms(U, self.ref[k], self.masks[(group, i)])
             J += Jk / len(tr)
             H += self._loss_terms(U, self.ref[k], self.masks[(group, i, "heldout")])[0] / len(tr)
-            g = np.concatenate([self.ev.T @ gre, self.ev.T @ gim], axis=1).ravel() / len(tr)
-            lam = adjoint_solve(self.backend, g, self.rows).reshape(-1, 4)
-            dC, drho = material_sensitivity(self.sd, u4, lam)
-            gC = gC.at[self.qp_pix].add(-dC.reshape(-1, 2, 2, 2, 2))
-            gr = gr.at[self.qp_pix].add(-drho.ravel())
+            G[:, j] = np.concatenate([self.ev.T @ gre, self.ev.T @ gim], axis=1).ravel() / len(tr)
+        t0 = self._tick("loss", t0)
+        lam = adjoint_solve(self.backend, G, self.rows)                   # all adjoints with one factor
+        t0 = self._tick("adjoint", t0)
+        k = len(tr)
+        dC, drho = material_sensitivity_batch(self.sd, x.T.reshape(k, -1, 4), lam.T.reshape(k, -1, 4))
+        gC = jnp.zeros((self.n_pix, 2, 2, 2, 2)).at[self.qp_pix].add(-dC.reshape(-1, 2, 2, 2, 2))
+        gr = jnp.zeros(self.n_pix).at[self.qp_pix].add(-drho.ravel())
+        self._tick("sensitivity", t0)
         metrics = {g: self._group_errors(asm, g) for g in groups if self.idx.get(g)}
         self.backend.free()
         return J, H, gC, gr, metrics
@@ -246,7 +303,9 @@ class BandCase(FrequencyCase):
             self.refs[f], bA = self._reference(pr, evA, bA)
 
     def select(self, f_star):
-        """Switch every coefficient and the reference to frequency ``f_star``."""
+        """Switch every coefficient and the reference to frequency ``f_star``.
+
+        The fixed matrix part is cached per frequency (``_rest_key`` is the frequency)."""
         f_star = float(f_star)
         cw = self._cfg_at(f_star)
         arrays, s = frequency_arrays(self.pp.problem, self.cfg, cw)

@@ -51,7 +51,9 @@ runs:
     freqs_per_step: 2
     val_every: 25
     init_from: band_500
-    steps: 1500
-    lr: 0.001
-    lr_end: 0.0001
+    # Steps 0-1500 ran with lr 0.001 -> 0.0001 (cosine). Continued to 3000 with a small rate, so the
+    # cosine schedule over 3000 steps gives about 1.3e-4 at step 1500, tapering to 5e-5.
+    steps: 3000
+    lr: 0.0002
+    lr_end: 0.00005
     eval_f_star: [0.5, 0.6, 0.75, 0.9, 1.0, 1.1, 1.25, 1.4, 1.5, 1.75, 2.0]

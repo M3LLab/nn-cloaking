@@ -109,6 +109,8 @@ def main():
         ck = pickle.load(open(ckpt_path, "rb"))
         theta, start, best = jax.tree.map(jnp.asarray, ck["theta"]), ck["step"], ck["best"]
         state = AdamState(m=jax.tree.map(jnp.asarray, ck["m"]), v=jax.tree.map(jnp.asarray, ck["v"]), t=ck["t"])
+        if os.path.exists(best_path):     # the best design can be newer than the last checkpoint
+            best = min(best, float(np.load(best_path)["score"]))
         print(f"resuming at step {start}, best validation {best:.4e}", flush=True)
     elif O.get("init_from"):
         ck = pickle.load(open(os.path.join(S["output_dir"], "optimize", O["init_from"], "checkpoint.pkl"), "rb"))
@@ -133,7 +135,7 @@ def main():
                 # frequencies drawn per step, reproducibly, so a resumed run continues the same sequence
                 picks = np.random.default_rng(1000 + step).choice(pool, O["freqs_per_step"], replace=False)
                 J, H, g, (C, rho) = band_loss_and_grad(theta, field, cases[0], picks)
-                is_val = step % O["val_every"] == 0 or step == steps
+                is_val = step % O["val_every"] == 0 or step == steps or step == start   # validate right after a resume
                 if is_val:
                     ve = band_validation(cases[0], C, rho)
             else:
@@ -149,7 +151,10 @@ def main():
                 os.replace(tmp, best_path)
             lr = lr1 + 0.5 * (lr0 - lr1) * (1 + math.cos(math.pi * min(step / max(steps, 1), 1.0)))
             rec = dict(step=step, train=float(J), heldout=float(H), val_rms_ec=score, val_median_e=float(np.median(ve[:, 0])),
-                       val_worst_e=float(ve[:, 0].max()), lr=lr, seconds=time.time() - t0)
+                       val_worst_e=float(ve[:, 0].max()), lr=lr, seconds=time.time() - t0,
+                       timing={k: round(v, 3) for k, v in cases[0].timing.items()})
+            for c in cases:
+                c.timing = {}
             log.write(json.dumps(rec) + "\n")
             log.flush()
             if step % O["print_every"] == 0 or step == steps:

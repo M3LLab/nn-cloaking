@@ -119,7 +119,7 @@ def test_adjoint_solves_the_transpose_system(setup):
     lam = adjoint_solve(case.backend, g.copy(), asm.rows)
     free = np.ones(n, bool)
     free[asm.rows] = False
-    r = (asm.A.T @ lam - g)[free]
+    r = (case.backend.A.T @ lam - g)[free]      # the matrix actually factorised
     assert np.linalg.norm(r) < 1e-8 * np.linalg.norm(g[free])
     assert imag_signs(8).tolist() == [1, 1, -1, -1, 1, 1, -1, -1]
     case.backend.free()
