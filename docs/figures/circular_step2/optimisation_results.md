@@ -1,6 +1,6 @@
 # Step 2 optimisation results
 
-‖u‖ error on the four **test** sources (median / worst), never used for training or selection. All runs: 8 training sources, 4 validation sources, quadratic map unless stated, 600 steps (pool: 1500, warm start from band).
+‖u‖ error on the four **test** sources (median / worst). Details: `docs/circular_cloak_step2.md`.
 
 | design | f*=0.5 | f*=0.6 | f*=0.75 | f*=0.9 | f*=1 | f*=1.1 | f*=1.25 | f*=1.4 | f*=1.5 | f*=1.75 | f*=2 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -11,6 +11,4 @@
 | f1_120 | 0.132 / 0.243 | – | – | – | 0.065 / 0.083 | – | – | – | 0.235 / 0.346 | – | 0.228 / 0.350 |
 | f1_60 | 0.147 / 0.281 | – | – | – | 0.099 / 0.131 | – | – | – | 0.219 / 0.363 | – | 0.245 / 0.341 |
 | band_500 | 0.074 / 0.120 | – | 0.126 / 0.239 | – | 0.086 / 0.170 | – | 0.141 / 0.236 | – | 0.106 / 0.211 | – | 0.221 / 0.343 |
-| pool_500 | 0.073 / 0.119 | 0.084 / 0.133 | 0.083 / 0.156 | 0.075 / 0.129 | 0.074 / 0.162 | 0.083 / 0.193 | 0.098 / 0.198 | 0.111 / 0.172 | 0.119 / 0.187 | 0.174 / 0.298 | – |
-
-Runs: f1_* trained at f* = 1 (number = pixels; linear = linear map); band_500 at f* = 0.5, 1, 1.5; pool_500 draws 2 of 11 frequencies in [0.5, 1.5] per step. Missing entries were not evaluated (f* = 2 for pool_500 was refused by the memory check).
+| pool_500 | 0.071 / 0.115 | 0.079 / 0.124 | 0.075 / 0.132 | 0.067 / 0.103 | 0.069 / 0.140 | 0.077 / 0.178 | 0.092 / 0.179 | 0.109 / 0.156 | 0.119 / 0.175 | 0.180 / 0.307 | – |

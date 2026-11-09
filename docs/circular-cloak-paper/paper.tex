@@ -33,7 +33,7 @@
 
 \begin{frontmatter}
 \title{Regularised transformation-elastic cloaking of a circular cavity embedded in an
-elastic medium: formulation and finite-element validation for bulk waves}
+elastic medium: validated ideal cloak and optimised pixelated Cauchy cloaks for bulk waves}
 
 %% TODO: author list carried over from the group's Wave Motion draft; confirm.
 \author[1,2]{David Aznaurov}
@@ -62,8 +62,13 @@ all proved here. At $\varepsilon/a=0.01$ and $b=\lambda_S$, the normalised exter
 displacement magnitude is $6.7\times10^{-5}$, against $0.158$ for the uncloaked cavity. The error
 scales as $\varepsilon^2$. Across six combinations of source position and force direction and for
 $0.1\le b/\lambda_S\le 2.5$, it stays between $2\times10^{-6}$ and $3\times10^{-4}$, whereas the uncloaked
-cavity reaches $0.2$. These results establish a validated reference for
-later approximations of the cloak by realisable materials.
+cavity reaches $0.2$. We then replace the ideal medium by 60 to 500 uniform pixels of admissible Cauchy material
+(minor- and major-symmetric, positive definite, positive density), parametrised by a neural field and optimised
+with an adjoint gradient through the finite-element model. Pixels alone cost little, whereas symmetrising the ideal
+tensor leaves the cavity no better hidden than without a cloak. Optimisation recovers most of this loss: on source
+positions never used in training, a 500-pixel design reduces the median error from $0.158$ to $0.042$ at the training
+frequency, and a design trained on a band of frequencies reduces it by a factor of $1.4$ to $2.3$ across
+$0.5\le b/\lambda_S\le1.5$.
 \end{abstract}
 
 \begin{keyword}
@@ -110,7 +115,14 @@ superposition of force directions, and a mirror symmetry.
 \item A quantified study of the continuous cloak: convergence in $\varepsilon$, sensitivity to mesh
 and absorbing layer, force direction, source position and frequency.
 \end{enumerate}
-Piecewise-constant and realisable approximations of the cloak are not treated here.
+\begin{enumerate}
+\setcounter{enumi}{3}
+\item Pixelated cloaks with admissible Cauchy materials (Section~\ref{sec:pixels}): the separate costs of pixels and of
+symmetry, a neural-field parametrisation that is admissible by construction (Proposition~\ref{prop:admissible}), an
+adjoint gradient that reuses one factorisation for all sources, forces and adjoints (Proposition~\ref{prop:adjoint}), and
+optimised designs evaluated on held-out sources and frequencies.
+\end{enumerate}
+The microstructures that would realise the pixel materials are not treated here.
 
 %% =============================================================
 \section{Statement of the problem}\label{sec:problem}
@@ -642,6 +654,232 @@ There is no conflict with energy conservation, since $\eta$ is a mean amplitude 
 \resizebox{\textwidth}{!}{\input{tables/diagnostic.tex}}
 \end{table}
 
+
+%% =============================================================
+\FloatBarrier
+\section{Pixelated cloaks with admissible Cauchy materials}\label{sec:pixels}
+%% =============================================================
+
+The ideal medium varies continuously and breaks minor symmetry (Proposition~\ref{prop:polar}). We now ask what is lost,
+and what optimisation can recover, when the cloak is built from a limited number of uniform pixels of ordinary
+(Cauchy) material. Unless stated otherwise, the radial map is $\phi_2$, $\varepsilon/a=0.01$ and the mesh, source shape and
+metrics are those of the previous sections.
+
+\subsection{Pixels and admissible materials}
+
+A polar grid of $n_\theta\times n_r$ pixels, uniform in $\theta$ and in $r$, covers $a<r<b$. Each pixel $p$ carries one
+stiffness tensor $C^{(p)}$ and one density $\rho^{(p)}$. The pixel of a quadrature point is found from its coordinates, so the
+pixel grid is independent of the mesh, while the cavity and the circle $r=b$ remain exact mesh edges. We use $50\times10$,
+$36\times7$, $24\times5$ and $15\times4$ pixels, i.e.\ 500, 252, 120 and 60; every pixel contains quadrature points, so all are
+active. A Cauchy material has $C_{ijkl}=C_{jikl}=C_{klij}$, so that $\bsigma=C:\nabla\mbf{u}=C:\boldsymbol{\varepsilon}$, and is
+admissible if its strain energy is positive. With $\mbf{v}=(\varepsilon_{11},\varepsilon_{22},2\varepsilon_{12})$ the energy is
+$\mbf{v}^T\mbf{M}\mbf{v}$, with the Voigt matrix
+\be\label{eq:voigt}
+\mbf{M}=\begin{pmatrix}C_{1111}&C_{1122}&C_{1112}\\C_{1122}&C_{2222}&C_{2212}\\C_{1112}&C_{2212}&C_{1212}\end{pmatrix},
+\ee
+so admissibility means $\mbf{M}$ positive definite and $\rho>0$.
+
+\subsection{Pixelisation and symmetry without optimisation}
+
+Before optimising, we sample the validated ideal tensor into pixels, either at the pixel centre or as the area average over
+an $8\times8$ sub-grid, and symmetrise it by the arithmetic mean
+$C^{\mathrm{sym}}_{ijkl}=\frac14(C'_{ijkl}+C'_{jikl}+C'_{ijlk}+C'_{jilk})$ used in~\citet{chatzopoulos2023}. Table~\ref{tab:s2baseline}
+and Fig.~\ref{fig:s2pixels} give the worst error over the six combinations of the two Step 1 sources with the three forces,
+at $f^*=1$.
+
+Pixels alone cost little. With 500 pixels the ideal tensor sampled at the centres gives $e=1.6\times10^{-2}$ for $\phi_2$ and
+$4.2\times10^{-3}$ for $\phi_1$, against $0.188$ for the hole. Symmetry costs far more: the symmetrised continuous cloak gives $0.200$
+and $0.222$, no better than the hole, and the symmetrised pixels are similar at every pixel count. So, at this frequency and with
+bulk excitation, the arithmetic-mean symmetrisation does not produce a useful cloak. This is consistent with the poor
+performance of symmetrised cloaks near $f^*=1$, in their normalisation, reported by~\citet{chatzopoulos2023} for Rayleigh waves, a different setting.
+
+\begin{table}[!htb]
+\centering\footnotesize
+\caption{Pixels and symmetry without optimisation: worst $e$ over two sources and three forces, $f^*=1$.}
+\label{tab:s2baseline}
+\input{tables/s2_baseline.tex}
+\end{table}
+
+\subsection{Neural-field parametrisation}
+
+The design is a coordinate network, reusing the multilayer perceptron of the group's earlier pipeline. Each pixel centre, with
+$\hat{r}=(r-a)/(b-a)$, is encoded by $\hat{r}$, $\cos(k\pi\hat r)$, $\sin(k\pi\hat r)$ for $k\le4$, $\cos m\theta$, $\sin m\theta$ for $m\le8$,
+and the products of the first three radial features with the angular ones: 73 features. Three hidden layers of 128 units with
+$\tanh$ give 7 outputs $y^{(p)}$, for 43\,399 parameters. With $\mbf{L}_0^{(p)}$ the Cholesky factor of the scaled symmetrised initial
+matrix $\mbf{M}_0^{(p)}/\mu$ and $s=0.1$,
+\be\label{eq:decode}
+\begin{gathered}
+L^{(p)}_{ii}=L^{(p)}_{0,ii}\,e^{s y_{ii}},\qquad L^{(p)}_{ij}=L^{(p)}_{0,ij}+s\,y_{ij}\sqrt{L^{(p)}_{0,ii}L^{(p)}_{0,jj}}\ (i>j),\\
+\mbf{M}^{(p)}=\mu\,\mbf{L}^{(p)}\mbf{L}^{(p)T},\qquad \rho^{(p)}=\rho_0^{(p)}e^{s y_7},
+\end{gathered}
+\ee
+with $y_{ij}$ six of the outputs. The last layer starts at zero, so the initial design is exactly the symmetrised pixel cloak.
+
+\begin{proposition}[Admissibility]\label{prop:admissible}
+For all network parameters, every pixel material defined by~\eqref{eq:voigt}--\eqref{eq:decode} is minor- and major-symmetric
+with positive-definite $\mbf{M}^{(p)}$, and $\rho^{(p)}>0$.
+\end{proposition}
+
+\begin{pf}
+$\mbf{L}^{(p)}$ is lower triangular with positive diagonal, hence non-singular, so $\mbf{M}^{(p)}=\mu\mbf{L}^{(p)}\mbf{L}^{(p)T}$ is symmetric
+positive definite. The tensor is rebuilt from the six entries of $\mbf{M}^{(p)}$ by assigning each to all of its minor and major
+partners, so both symmetries hold by construction. The exponential is positive.\qedbox
+\end{pf}
+
+The constraint is exact, not penalised, so no design produced during optimisation leaves the admissible set. It does not bound the
+contrast between pixels.
+
+\subsection{Loss, adjoint gradient and cost}\label{sec:s2training}
+
+Sources are split into three groups, all on one mesh refined around every source. The eight training sources lie on the circle
+$r=3.5$\,m at $22.5^\circ+45^\circ k$. The four validation sources, at $(\pm2.5,0)$ and $(0,\pm4.5)$\,m, select the best design.
+The four test sources, $(-3,-3)$, $(-3.5,-2)$, $(3,3)$ and $(2.2,-1.5)$\,m, which include both Step 1 sources, take no part in
+training or selection. Both force directions are used, which by Proposition~\ref{prop:superposition} spans all in-plane forces.
+For the right-hand sides $k$ of the training sources, the loss is
+\be\label{eq:loss}
+\mathcal{J}=\frac{1}{K}\sum_{k=1}^{K}\frac{\|\mbf{P}(\mbf{u}_k-\mbf{u}_{A,k})\|^2_{T_k}}{\|\mbf{P}\mbf{u}_{A,k}\|^2_{T_k}},
+\ee
+where $\mbf{P}$ evaluates the field at the exterior points of Section~\ref{sec:numerics} and $T_k$ is a fixed random half of those
+outside the neighbourhood of the source; the other half is held out. The reference $\mbf{u}_{A,k}$ is case A on the same exterior
+mesh, so that the discretisation error cancels.
+
+\begin{proposition}[Adjoint gradient]\label{prop:adjoint}
+Let $\mbf{K}(\theta)\mbf{u}=\mbf{b}$ be the real form, restricted to free degrees of freedom, of the complex system from~\eqref{eq:weak}, with
+the material depending on parameters $\theta$, and let $\mbf{g}=\partial\mathcal{J}/\partial\mbf{u}$. Then
+\be\label{eq:adjoint}
+\frac{\mathrm{d}\mathcal{J}}{\mathrm{d}\theta}=-\boldsymbol{\lambda}^T\frac{\partial\mbf{K}}{\partial\theta}\mbf{u},\qquad
+\mbf{K}^T\boldsymbol{\lambda}=\mbf{g},\qquad \mbf{K}^T=\mbf{S}\mbf{K}\mbf{S},
+\ee
+with $\mbf{S}$ diagonal, $+1$ on real and $-1$ on imaginary unknowns, so that $\boldsymbol{\lambda}=\mbf{S}\mbf{K}^{-1}\mbf{S}\mbf{g}$ uses the
+forward factorisation. For a quadrature point $q$ of weight $w_q$ in the annulus, with $\mbf{u}=\mbf{u}^R+\mathrm{i}\mbf{u}^I$ and
+$\boldsymbol{\lambda}$ split likewise,
+\be\label{eq:sensitivity}
+\begin{aligned}
+\boldsymbol{\lambda}^T\frac{\partial\mbf{K}}{\partial C_{ijkl}(q)}\mbf{u}&=w_q\bigl(\partial_j\lambda^R_i\,\partial_lu^R_k+\partial_j\lambda^I_i\,\partial_lu^I_k\bigr),\\
+\boldsymbol{\lambda}^T\frac{\partial\mbf{K}}{\partial\rho(q)}\mbf{u}&=-\omega^2w_q\bigl(\boldsymbol{\lambda}^R\!\cdot\mbf{u}^R+\boldsymbol{\lambda}^I\!\cdot\mbf{u}^I\bigr).
+\end{aligned}
+\ee
+\end{proposition}
+
+\begin{pf}
+Differentiating $\mbf{K}\mbf{u}=\mbf{b}$, with $\mbf{b}$ independent of $\theta$, gives $\mbf{K}\,\mathrm{d}\mbf{u}=-(\partial\mbf{K}/\partial\theta)\mbf{u}$,
+so $\mathrm{d}\mathcal{J}=\mbf{g}^T\mathrm{d}\mbf{u}=-\boldsymbol{\lambda}^T(\partial\mbf{K}/\partial\theta)\mbf{u}$ with $\mbf{K}^T\boldsymbol{\lambda}=\mbf{g}$.
+The bilinear form of~\eqref{eq:weak} is symmetric without conjugation, because $C^c_{ijkl}=C^c_{klij}$ (Proposition~\ref{prop:pml})
+and $\rho^c$ is scalar; so the complex matrix $\mbf{A}+\mathrm{i}\mbf{B}$ has $\mbf{A}^T=\mbf{A}$, $\mbf{B}^T=\mbf{B}$. Its real form is
+$\mbf{K}=\bigl(\begin{smallmatrix}\mbf{A}&-\mbf{B}\\ \mbf{B}&\mbf{A}\end{smallmatrix}\bigr)$, whose transpose is
+$\bigl(\begin{smallmatrix}\mbf{A}&\mbf{B}\\ -\mbf{B}&\mbf{A}\end{smallmatrix}\bigr)=\mbf{S}\mbf{K}\mbf{S}$. Restricting to free unknowns keeps the identity,
+since Dirichlet unknowns are removed from rows and columns alike. Finally, in the annulus the real and imaginary parts decouple and
+the weak form is linear in $C$ and $\rho$, which gives~\eqref{eq:sensitivity} at each quadrature point. The gradient with respect to $\theta$
+follows by the chain rule through~\eqref{eq:decode}.\qedbox
+\end{pf}
+
+The implementation was checked against central finite differences of $\mathcal{J}$ (relative agreement within $10^{-5}$ for the
+complex and the magnitude loss), against reverse-mode differentiation of the JAX-FEM residual (within $10^{-8}$), and the adjoint
+satisfies $\mbf{K}^T\boldsymbol{\lambda}=\mbf{g}$ to $10^{-8}$. The matrix depends on neither source nor force, so at each frequency one
+factorisation serves the 16 training and 8 validation right-hand sides and the 16 adjoint solves. All frequencies up to
+$f^*\approx1.6$ share the base mesh; a problem built at $\omega_0$ gives the one at $\omega$ by scaling the density by $(\omega/\omega_0)^2$
+and recomputing the PML coefficients~\eqref{eq:pml}, which is exact.
+
+We minimise $\mathcal{J}$ with Adam and a cosine learning-rate decay from $2\times10^{-3}$ to $2\times10^{-4}$ over 600 steps. On a
+12-core CPU, a step costs about 18--20\,s with eight training sources at one frequency and 51\,s at three frequencies. The
+frequency-pool run draws two of eleven frequencies $f^*\in\{0.5,0.6,\dots,1.5\}$ per step (33--40\,s per step), starts from the
+three-frequency design, and ran 1500 steps with a rate decaying from $10^{-3}$ to $10^{-4}$, then 1500 more from $1.3\times10^{-4}$ to
+$5\times10^{-5}$.
+
+\FloatBarrier
+\subsection{Results}
+
+\paragraph{One training source is not enough} A first design trained on a single source reached $e\approx6\times10^{-3}$ on it, but only
+$0.10$--$0.12$ on another, unseen source (Table~\ref{tab:s2pilot}), against $0.16$ for the hole. Held-out points of the trained source did not reveal this,
+since they belong to the same field. All further runs use the eight training sources and report test sources.
+
+\begin{table}[!htb]
+\centering\small
+\caption{Design trained on one source only, $f^*=1$, 500 pixels, 150 steps.}
+\label{tab:s2pilot}
+\input{tables/s2_pilot.tex}
+\end{table}
+
+\paragraph{Single frequency} Table~\ref{tab:s2runs} summarises all runs. At $f^*=1$ the 500-pixel design gives a test median of $0.042$
+and a worst value of $0.053$, against $0.158$ and $0.263$ for the hole: a factor of $3.8$ and $5.0$. The error rises gradually with fewer pixels, to a median
+of $0.057$, $0.065$ and $0.099$ for 252, 120 and 60 pixels. After optimisation the quadratic map is better than the linear one
+($0.042$ against $0.049$), the reverse of the ranking for unoptimised ideal pixels. Figure~\ref{fig:s2pixels} places the optimised designs among
+the baselines: optimisation recovers most of what symmetrisation loses (from $0.202$ to $0.044$ at 500 pixels), but stays above the
+non-admissible ideal pixels ($0.016$ and $0.032$). At 60 pixels the optimised Cauchy design matches the ideal pixels. Every run except the
+60-pixel one was still improving when stopped (Fig.~\ref{fig:s2training}).
+
+\begin{table}[!htb]
+\centering\footnotesize
+\caption{Optimised designs at $f^*=1$: median and worst $e$ over the four test sources and three forces, and the worst over the two Step 1
+sources for comparison with Table~\ref{tab:s2baseline}. The bare hole gives $0.158$ (median) and $0.263$ (worst) on the test sources.}
+\label{tab:s2runs}
+\resizebox{\textwidth}{!}{\input{tables/s2_runs.tex}}
+\end{table}
+
+\begin{figure}[!htb]
+\centering
+\includegraphics[width=0.66\textwidth]{s2_fig_pixels.png}
+\caption{Worst $e$ over the two Step 1 sources at $f^*=1$ against the number of pixels, for unoptimised ideal and symmetrised pixels and for
+the optimised Cauchy designs.}
+\label{fig:s2pixels}
+\end{figure}
+
+\paragraph{Frequency} Table~\ref{tab:s2frequency} and Fig.~\ref{fig:s2frequency} evaluate the designs across frequency. The single-frequency
+design is the best at $f^*=1$ but worse than the hole at $f^*=1.5$ and $2$. Training at three fixed frequencies helps at those frequencies but
+leaves peaks between them ($0.126$ at $f^*=0.75$, $0.141$ at $1.25$). Drawing two of eleven frequencies per step removes the peaks: across
+$0.5\le f^*\le1.5$ the median is $0.067$--$0.119$ and the worst value $0.103$--$0.179$, against $0.138$--$0.168$ and $0.222$--$0.278$ for the hole,
+so the median is $1.4$ to $2.3$ times lower. The price is the performance at a single frequency ($0.069$ against $0.042$ at $f^*=1$). Just above the
+band, at $f^*=1.75$, the median rises to $0.180$; the hole was not computed there, and $f^*=2$ was not evaluated for this design (memory limit).
+
+\begin{table}[!htb]
+\centering\footnotesize
+\caption{Median / worst $e$ on the test sources against frequency, 500 pixels. The pool design was trained on $f^*\in[0.5,1.5]$.}
+\label{tab:s2frequency}
+\input{tables/s2_frequency.tex}
+\end{table}
+
+\begin{figure}[!htb]
+\centering
+\includegraphics[width=\textwidth]{s2_fig_frequency.png}
+\caption{Error on the test sources against frequency for the bare hole and three optimised 500-pixel designs.}
+\label{fig:s2frequency}
+\end{figure}
+
+\paragraph{Designs and fields} Figure~\ref{fig:s2materials} shows the pixel materials in the local polar frame. The optimised designs keep the
+large tangential stiffness of the transformation near the cavity but add strong coupling terms and a non-radial pattern; the problem is
+rotationally symmetric, but nothing in the parametrisation or in the eight-source training imposes that symmetry. The contrast is large: the
+eigenvalues of $\mbf{M}^{(p)}$ span $0.13\mu$ to $311\mu$ for the single-frequency design and $0.04\mu$ to $786\mu$ for the pool design, and the
+density $0.70\rho_0$ to $2.1\rho_0$ and $0.21\rho_0$ to $3.2\rho_0$. Figure~\ref{fig:s2fields} shows the fields at an unseen source: both designs
+suppress most of the shadow and scattering of the hole at $f^*=1$, while at $f^*=1.5$ only the pool design does.
+
+\begin{figure}[!htb]
+\centering
+\includegraphics[width=\textwidth]{s2_fig_materials.png}
+\caption{Pixel materials of the symmetrised initial design and of two optimised designs, in the local polar frame. Logarithmic scale for
+the normal and shear stiffness and the density.}
+\label{fig:s2materials}
+\end{figure}
+
+\begin{figure}[!htb]
+\centering
+\includegraphics[width=\textwidth]{s2_fig_fields.png}
+\caption{Total displacement for the test source $(-3.5,-2)$\,m and vertical force at $f^*=1$ (top) and $1.5$ (bottom).}
+\label{fig:s2fields}
+\end{figure}
+
+\begin{figure}[!htb]
+\centering
+\includegraphics[width=\textwidth]{s2_fig_training.png}
+\caption{Validation error during optimisation. Right: the two band runs use different validation frequencies (three and eleven), so their
+levels are not directly comparable.}
+\label{fig:s2training}
+\end{figure}
+
+\paragraph{Limitations of the optimisation results} The designs are not converged, only one geometry and one mesh were used, the source groups
+contain four test positions only, and the networks, learning rates and source layout were not tuned. The test sources lie at radii between 2.7
+and 4.2\,m; generalisation to other distances was not tested. The pixel materials are unconstrained in contrast and anisotropy, and their
+realisation by microstructures has not been studied.
+
 %% =============================================================
 \FloatBarrier
 \section{Discussion}\label{sec:discussion}
@@ -649,15 +887,21 @@ There is no conflict with energy conservation, since $\eta$ is a mean amplitude 
 
 Theorem~\ref{thm:equivalence} turns the assessment of a regularised cloak into the comparison of two ordinary problems. Without case D, a small value of C vs.\ A alone would not tell whether the residual comes from $\varepsilon$ or from the discretisation. Here the decomposition shows that it comes from $\varepsilon$ at the base resolution, and that the numerical error is smaller. The comparison of layers also shows why a validation against an analytic reference is needed in addition: the original damping layer had a 3.5\% complex error against~\eqref{eq:green}, invisible in C vs.\ A.
 
-Our results have the following limits. Only two source positions were considered, with frequency up to $b/\lambda_S=2.5$ and one geometry, $b=3a$. Refinement near the cavity and quadrature order were not studied separately, and the behaviour of C vs.\ D on finer meshes remains open. Case B has no independent reference such as a series solution for the cavity. The PML was tested through its effect on case A, and the elastodynamic stability of the layer was not analysed beyond the frequency-domain results. The medium~\eqref{eq:pushforward} has strong contrast at small $\varepsilon$ and broken minor symmetry, up to about 0.45 in the relative measure of Fig.~\ref{fig:material}, and we have not addressed how it would be realised.
+For the continuous cloak, our results have the following limits. Only two source positions were considered, with frequency up to $b/\lambda_S=2.5$ and one geometry, $b=3a$. Refinement near the cavity and quadrature order were not studied separately, and the behaviour of C vs.\ D on finer meshes remains open. Case B has no independent reference such as a series solution for the cavity. The PML was tested through its effect on case A, and the elastodynamic stability of the layer was not analysed beyond the frequency-domain results. The medium~\eqref{eq:pushforward} has strong contrast at small $\varepsilon$ and broken minor symmetry, up to about 0.45 in the relative measure of Fig.~\ref{fig:material}, and we have not addressed how it would be realised.
 
-The natural next step is to approximate this continuous reference by a limited number of piecewise-constant material pixels, first to measure the pixelisation error alone, then to optimise admissible Cauchy materials against the metrics used here. Those stages are future work and no results for them are reported here.
+For the pixelated cloaks, the main lesson is that the cost of a realisable cloak comes from symmetry, not from pixels: with
+the ideal tensor, 500 pixels reach $e$ between about $4\times10^{-3}$ and $3\times10^{-2}$, while symmetrisation leaves the cavity no better hidden than without a cloak.
+Gradient-based optimisation of admissible materials recovers a large part of this loss, but generalises only when it is trained on many source
+positions, and across frequency only when it is trained on a band. Even then a gap of more than two orders of magnitude ($0.042$ against about $10^{-4}$) remains to the
+continuous Cosserat cloak, which a Cauchy material cannot reproduce exactly. Natural next steps are longer training on more sources and frequencies,
+constraints on contrast and on rotational symmetry, and the realisation of the pixel materials by microstructures.
 
 %% =============================================================
 \section{Conclusion}\label{sec:conclusion}
 %% =============================================================
 
-We have formulated and validated a regularised continuous cloak for a circular cavity embedded in an elastic medium and excited by bulk waves. An exact equivalence with a hole of radius $\varepsilon$ yields a direct way of separating regularisation and numerical errors, and implies traction continuity at the outer interface for any increasing $C^1$ radial map. With a stretched-coordinate PML and quadratic elements, the model agrees with a closed-form reference and satisfies superposition and mirror identities. For $b=\lambda_S$ and $\varepsilon/a=0.01$, the cloak reduces the normalised exterior error in total displacement from $0.158$ to $6.7\times10^{-5}$. The error scales as $\varepsilon^2$, and remains below $3.2\times10^{-4}$ for all force directions, source positions and frequencies tested. These results provide a verified baseline for realisable approximations of the cloak.
+We have formulated and validated a regularised continuous cloak for a circular cavity embedded in an elastic medium and excited by bulk waves. An exact equivalence with a hole of radius $\varepsilon$ yields a direct way of separating regularisation and numerical errors, and implies traction continuity at the outer interface for any increasing $C^1$ radial map. With a stretched-coordinate PML and quadratic elements, the model agrees with a closed-form reference and satisfies superposition and mirror identities. For $b=\lambda_S$ and $\varepsilon/a=0.01$, the cloak reduces the normalised exterior error in total displacement from $0.158$ to $6.7\times10^{-5}$. The error scales as $\varepsilon^2$, and remains below $3.2\times10^{-4}$ for all force directions, source positions and frequencies tested. Replacing the ideal medium by 500 pixels of admissible Cauchy material and optimising them reduces the median error on unseen sources from
+$0.158$ to $0.042$ at one frequency, or by a factor of $1.4$ to $2.3$ over a band of frequencies, while symmetrisation alone does not cloak.
 
 \section*{Data availability}
 The code, configurations and result tables are in the \texttt{circular\_cloak} branch of the project repository. The drivers are the following files in its \texttt{scripts} directory:
@@ -665,6 +909,10 @@ The code, configurations and result tables are in the \texttt{circular\_cloak} b
 \item \texttt{circular\_step1.py}
 \item \texttt{circular\_frequency\_sweep.py}
 \item \texttt{circular\_ratio\_diagnostic.py}
+\item \texttt{circular\_pixel\_baseline.py}
+\item \texttt{circular\_optimize.py}
+\item \texttt{circular\_hole\_reference.py}
+\item \texttt{circular\_step2\_figures.py}
 \end{itemize}
 
 %% TODO: CRediT authorship contribution statement, declaration of competing interest, acknowledgements and funding.

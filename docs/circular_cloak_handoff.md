@@ -1,6 +1,6 @@
 # Circular cloak: project handoff
 
-Status as of 2026-11-06, branch `circular_cloak`. Written so that a person or another agent can
+Status as of 2026-11-09, branch `circular_cloak`. Written so that a person or another agent can
 continue the work, or draft a paper, from this file alone. Detailed derivations and all result
 tables are in [`circular_cloak_step1.md`](circular_cloak_step1.md).
 
@@ -10,7 +10,7 @@ tables are in [`circular_cloak_step1.md`](circular_cloak_step1.md).
 |---|---|
 | Step 1: continuous regularised ideal cloak | done locally, awaiting final approval |
 | Finest mesh level (scale 0.6, 225k elements) | not run: exceeds the memory guard on the 31 GB workstation |
-| Step 2: pixelated cloak and optimisation | started: baselines and a one-source pilot done locally (section 12); full training planned for the H100 server |
+| Step 2: pixelated cloak and optimisation | baselines and optimisation done locally; report `docs/circular_cloak_step2.md`, paper Section 7; next runs on the H100 |
 | Microstructure realisation | later stage, out of scope |
 
 ## 2. Goal and problem
@@ -220,6 +220,7 @@ Full table: `docs/figures/circular_step2/optimisation_results.md`; histories in 
   removes them: test median 0.073 to 0.119 across the band against 0.138 to 0.168 for the bare hole, but 0.174 at
   f* = 1.75 outside it.
 - Every run except 60 pixels was still improving when stopped. The pool run takes about 40 s per step locally.
+- The pool run was continued to 3000 steps: test medians 0.067–0.119 across [0.5, 1.5]; best validation 0.2053.
 
 ### Running on the H100 server
 
