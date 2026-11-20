@@ -1,0 +1,23 @@
+Reviewer 1 -
+ Initial submission, 
+October 6
+
+The manuscript presents a novel and potentially valuable framework for broadband Rayleigh-wave carpet cloaking by combining differentiable FEM, coordinate-based neural fields, and microstructure realization under symmetric Cauchy-material constraints. The results are promising, particularly the high cloaking efficiencies obtained for the continuous orthotropic design and homogenized microstructure, together with the demonstrated broadband response. The manuscript is generally well organized and technically sound; however, minor revision is recommended before publication. 
+
+1. The authors should clarify the optimization procedure, including learning rate, number of iterations, convergence and stopping criteria, and provide a brief assessment of sensitivity to initialization. The parameters and implementation details of the GMM/diffusion-based microstructure generation should be reported more explicitly, and the discrepancy between the homogenized efficiency (η≈0.967\eta\approx0.967) and the fully resolved microstructure result (η≈0.76\eta\approx0.76) should be discussed quantitatively. 
+
+2. The meaning and bandwidth associated with the term “broadband” should also be clarified, together with the implications of using a phase-invariant displacement-magnitude objective. 
+
+3. A mesh-convergence or numerical-resolution check would strengthen the validation. 
+
+4. Finally, the authors should carefully cross-check the reference list and citation support, including completing Ref. [4], adding the DOI to Ref. [9], verifying that Ref. [23] directly supports the specific cellular-automaton procedure used, and updating Ref. [30] if a peer-reviewed version is available. 
+
+
+Reviewer 2 -
+ Initial submission, 
+October 30
+It's an interesting and comprehensive work. The integration of coordinate-based neural fields with a differentiable JAX-FEM solver to optimize realisable Cauchy materials, combined with the subsequent projection onto explicit microstructures, presents a compelling and promising pipeline for elastodynamic cloak design. Addressing the following points will help clarify the scope of the work and further strengthen the manuscript for publication.
+
+1. Equation (20) solely constrains the displacement magnitude, which, as the authors acknowledge, results in an optimized cloak with a phase lag of approximately 0.18λ. The authors' explanation that this is reasonable for single-frequency scenarios focused on vibration mitigation is well-taken. However, we would like to point out a limitation: for broadband or pulse excitations (such as seismic waves), the phase lag will vary across frequencies, which could potentially lead to severe waveform distortion. We suggest the authors explicitly define the application boundaries of this work (i.e., whether it is strictly "cloaking" or "magnitude restoration"). Furthermore, to quantify whether this phase cost is acceptable in practical broadband scenarios, we recommend providing post-hoc metrics such as the time-domain impulse response or broadband waveform fidelity.
+2. In Sec. 4.4, the optimization is performed using only 7 uniformly spaced frequencies, yet the dense sweep demonstrates excellent performance across the entire band. The manuscript, however, does not explain why the untrained frequencies also perform well. We suggest adding a brief discussion on whether this is attributed to the physical continuity of the system's response, the spatial smoothness prior of the neural field suppressing narrowband resonances, or simply because 7 sampling points are sufficient to cover the band. Additionally, a sensitivity analysis on sampling density (e.g., how much performance drops if reduced to 3 or 5 frequencies) would greatly help readers understand the robustness of the broadband design and the trade-off between training frequency count and performance.
+3. There is a significant gap of approximately 20% between the homogenized back-filling result (η=0.967) and the direct FEM simulation of the fully-resolved solid/void geometry (η=0.76). The authors dismiss this with a brief statement that "matching the quasi-static homogenised elastic constants is not sufficient." Since this is a critical metric supporting the core conclusion of "microstructure realisability," a brief explanation is insufficient for readers to assess the true potential of this implementation. We recommend the authors at least provide a preliminary attribution for this gap. Furthermore, we strongly suggest supplementing a displacement field plot of the fully-resolved cloak (compared against the homogenized and reference fields) to intuitively visualize where the performance loss occurs.
